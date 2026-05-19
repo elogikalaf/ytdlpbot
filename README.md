@@ -38,3 +38,5 @@ python main.py
 
 The bot creates local download files temporarily under `downloads/` and removes
 them after upload.
+
+Download and upload progress are shown in the Telegram status message.

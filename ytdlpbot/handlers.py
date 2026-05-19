@@ -13,10 +13,47 @@ from ytdlpbot.auth import (
 from ytdlpbot.cache import VideoCache, VideoEntry
 from ytdlpbot.config import Settings
 from ytdlpbot.media import VIDEO_EXTENSIONS, download_media, extract_info, make_video_id
+from ytdlpbot.progress import ProgressReporter, format_bytes
 
 
 def _format_size(size: Any) -> str:
-    return f"{size / (1024 * 1024):.1f}MB" if size else "unknown size"
+    return format_bytes(size) if size else "unknown size"
+
+
+def _title(info: Dict[str, Any]) -> str:
+    return str(info.get("title") or "Untitled")[:60]
+
+
+def _download_progress_hook(reporter: ProgressReporter):
+    def hook(data: Dict[str, Any]) -> None:
+        status = data.get("status")
+        if status == "downloading":
+            current = data.get("downloaded_bytes") or 0
+            total = data.get("total_bytes") or data.get("total_bytes_estimate")
+            reporter.sync_update(
+                "Downloading...",
+                current,
+                total,
+                speed=data.get("speed"),
+                eta=data.get("eta"),
+            )
+        elif status == "finished":
+            total = data.get("total_bytes") or data.get("downloaded_bytes") or 0
+            reporter.sync_update(
+                "Processing downloaded file...",
+                total,
+                total,
+                force=True,
+            )
+
+    return hook
+
+
+def _upload_progress_callback(reporter: ProgressReporter):
+    def callback(current: int, total: int) -> None:
+        reporter.sync_update("Uploading to Telegram...", current, total)
+
+    return callback
 
 
 def _add_format(
@@ -64,15 +101,16 @@ def _build_format_keyboard(
 
 
 def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> None:
-    @app.on_message(filters.command("start"))
+    @app.on_message(filters.command(["start", "help"]))
     async def start_command(client: Client, message) -> None:
         if await reject_message_if_unauthorized(message, settings):
             return
 
         await message.reply(
             "**Video & Subtitle Downloader**\n\n"
-            "Send me any link and I will fetch available formats, download it, "
-            "and upload the file here."
+            "Send a supported link and I will show available formats, download "
+            "your choice, and upload it here with progress updates.\n\n"
+            "Allowed users only."
         )
 
     @app.on_message(filters.regex(r"(https?://[^\s]+)"))
@@ -89,10 +127,16 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
             entry = VideoEntry(info=info, url=url)
             cache.set(video_id, entry)
             keyboard = _build_format_keyboard(info, video_id, entry)
-            title = info.get("title", "Link Found")[:50]
+            title = _title(info)
+            duration = info.get("duration")
+            duration_text = (
+                f"\nDuration: `{duration // 60}:{duration % 60:02d}`"
+                if duration
+                else ""
+            )
 
             await status_message.edit(
-                f"**Title:** `{title}`\nSelect format:",
+                f"**Title:** `{title}`{duration_text}\nSelect format:",
                 reply_markup=keyboard,
             )
         except Exception as exc:
@@ -126,7 +170,9 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
             return
 
         output_path: Path | None = None
-        await callback_query.message.edit("Downloading...")
+        await callback_query.answer("Starting download...")
+        reporter = ProgressReporter(callback_query.message, _title(entry.info))
+        await reporter.start("Preparing download...")
 
         try:
             output_path = await download_media(
@@ -135,8 +181,13 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
                 format_id,
                 settings.download_dir,
                 entry.info,
+                progress_hook=_download_progress_hook(reporter),
             )
-            await callback_query.message.edit("Uploading to Telegram...")
+            await reporter.done(
+                f"Download complete. Uploading `{output_path.name}` "
+                f"({format_bytes(output_path.stat().st_size)})..."
+            )
+            upload_progress = _upload_progress_callback(reporter)
 
             if output_path.suffix.lstrip(".").lower() in VIDEO_EXTENSIONS:
                 await client.send_video(
@@ -144,17 +195,20 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
                     video=str(output_path),
                     caption=f"**{entry.info.get('title')}**",
                     supports_streaming=True,
+                    progress=upload_progress,
                 )
             else:
                 await client.send_document(
                     chat_id=callback_query.message.chat.id,
                     document=str(output_path),
                     caption=f"**Subtitle/File:** `{entry.info.get('title')}`",
+                    progress=upload_progress,
                 )
 
+            await reporter.done("Upload complete.")
             await callback_query.message.delete()
         except Exception as exc:
-            await callback_query.message.edit(f"Failed: {exc}")
+            await reporter.fail(f"Failed: {exc}")
         finally:
             if output_path and output_path.exists():
                 output_path.unlink()

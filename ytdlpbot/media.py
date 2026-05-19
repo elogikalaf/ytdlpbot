@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict, Optional
 
 import yt_dlp
 
 
 VIDEO_EXTENSIONS = {"mp4", "mkv", "webm", "mov"}
+ProgressHook = Callable[[Dict[str, Any]], None]
 
 
 def make_video_id(url: str) -> str:
@@ -40,6 +41,7 @@ async def download_media(
     format_id: str,
     output_dir: str,
     info: Dict[str, Any],
+    progress_hook: Optional[ProgressHook] = None,
 ) -> Path:
     output_path = Path(output_dir) / f"file_{video_id}.{choose_extension(url, info)}"
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,6 +55,8 @@ async def download_media(
         "quiet": True,
         "noplaylist": True,
     }
+    if progress_hook:
+        ydl_opts["progress_hooks"] = [progress_hook]
 
     await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(ydl_opts).download([url]))
     return output_path
