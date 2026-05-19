@@ -44,10 +44,14 @@ def load_settings() -> Settings:
     except ValueError as exc:
         raise RuntimeError("API_ID must be numeric") from exc
 
+    owner_ids = os.getenv("OWNER_ID") or os.getenv("ALLOWED_USER_IDS")
+    if not owner_ids:
+        raise RuntimeError("Missing required environment variable: OWNER_ID")
+
     return Settings(
         api_id=api_id,
         api_hash=_required_env("API_HASH"),
         bot_token=_required_env("BOT_TOKEN"),
-        allowed_user_ids=_parse_allowed_user_ids(_required_env("ALLOWED_USER_IDS")),
+        allowed_user_ids=_parse_allowed_user_ids(owner_ids),
         download_dir=os.getenv("DOWNLOAD_DIR", "downloads"),
     )
