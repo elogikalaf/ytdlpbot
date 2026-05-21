@@ -84,7 +84,7 @@ def _build_format_keyboard(
     index = 0
     for item in formats:
         height = item.get("height")
-        if height not in {360, 720, 1080} or height in seen_heights:
+        if height not in {144, 240, 360, 480, 720, 1080, 1440, 2160} or height in seen_heights:
             continue
 
         key = f"f{index}"
