@@ -17,8 +17,24 @@ from ytdlpbot.media import VIDEO_EXTENSIONS, download_media, extract_info, make_
 from ytdlpbot.progress import ProgressReporter, format_bytes
 
 
-def _format_size(size: Any) -> str:
-    return format_bytes(size) if size else "unknown size"
+_VIDEO_HEIGHTS = {144, 240, 360, 480, 720, 1080, 1440, 2160}
+
+
+def _positive_float(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _format_size(size: Any, *, estimated: bool = False) -> str:
+    parsed_size = _positive_float(size)
+    if parsed_size is None:
+        return "unknown size"
+
+    prefix = "~" if estimated else ""
+    return f"{prefix}{format_bytes(parsed_size)}"
 
 
 def _title(info: Dict[str, Any]) -> str:
@@ -87,6 +103,84 @@ def _is_downloadable_video_format(item: Dict[str, Any]) -> bool:
     return not any(value in note for value in ("storyboard", "thumbnail", "image"))
 
 
+def _is_audio_format(item: Dict[str, Any]) -> bool:
+    return item.get("acodec") not in {None, "none"} and item.get("vcodec") in {
+        None,
+        "none",
+    }
+
+
+def _duration_seconds(info: Dict[str, Any]) -> Optional[float]:
+    return _positive_float(info.get("duration"))
+
+
+def _bitrate_size(item: Dict[str, Any], duration: Optional[float]) -> Optional[float]:
+    if duration is None:
+        return None
+
+    bitrate = _positive_float(item.get("tbr"))
+    if bitrate is None:
+        if _is_audio_format(item):
+            bitrate = _positive_float(item.get("abr"))
+        else:
+            bitrate = _positive_float(item.get("vbr"))
+
+    if bitrate is None:
+        return None
+
+    return bitrate * 1000 / 8 * duration
+
+
+def _item_size(item: Dict[str, Any], duration: Optional[float]) -> tuple[Optional[float], bool]:
+    filesize = _positive_float(item.get("filesize"))
+    if filesize is not None:
+        return filesize, False
+
+    filesize_approx = _positive_float(item.get("filesize_approx"))
+    if filesize_approx is not None:
+        return filesize_approx, True
+
+    bitrate_size = _bitrate_size(item, duration)
+    if bitrate_size is not None:
+        return bitrate_size, True
+
+    return None, False
+
+
+def _best_audio_format(
+    formats: List[Dict[str, Any]],
+    duration: Optional[float],
+) -> Optional[Dict[str, Any]]:
+    audio_formats = [item for item in formats if _is_audio_format(item)]
+    if not audio_formats:
+        return None
+
+    def quality_key(item: Dict[str, Any]) -> tuple[float, float]:
+        size, _ = _item_size(item, duration)
+        bitrate = _positive_float(item.get("abr")) or _positive_float(item.get("tbr")) or 0
+        return bitrate, size or 0
+
+    return max(audio_formats, key=quality_key)
+
+
+def _download_size_label(
+    item: Dict[str, Any],
+    audio_format: Optional[Dict[str, Any]],
+    duration: Optional[float],
+) -> str:
+    total_size, estimated = _item_size(item, duration)
+    if total_size is None:
+        return _format_size(None)
+
+    if item.get("acodec") in {None, "none"} and audio_format:
+        audio_size, audio_estimated = _item_size(audio_format, duration)
+        if audio_size is not None:
+            total_size += audio_size
+            estimated = estimated or audio_estimated
+
+    return _format_size(total_size, estimated=estimated)
+
+
 def _build_format_keyboard(
     info: Dict[str, Any],
     video_id: str,
@@ -94,6 +188,8 @@ def _build_format_keyboard(
 ) -> Optional[InlineKeyboardMarkup]:
     buttons: List[List[InlineKeyboardButton]] = []
     formats = info.get("formats", [])
+    duration = _duration_seconds(info)
+    audio_format = _best_audio_format(formats, duration)
 
     if not formats or (len(formats) == 1 and not formats[0].get("height")):
         _add_format(buttons, entry, video_id, "raw", "Download File/Subtitle", "raw")
@@ -106,12 +202,11 @@ def _build_format_keyboard(
             continue
 
         height = item.get("height")
-        if height not in {144, 240, 360, 480, 720, 1080, 1440, 2160} or height in seen_heights:
+        if height not in _VIDEO_HEIGHTS or height in seen_heights:
             continue
 
         key = f"f{index}"
-        size = item.get("filesize") or item.get("filesize_approx")
-        label = f"{height}p ({_format_size(size)})"
+        label = f"{height}p ({_download_size_label(item, audio_format, duration)})"
         _add_format(buttons, entry, video_id, key, label, item["format_id"])
         seen_heights.add(height)
         index += 1
