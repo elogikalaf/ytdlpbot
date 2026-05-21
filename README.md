@@ -19,10 +19,24 @@ API_HASH=your_api_hash
 BOT_TOKEN=your_bot_token
 OWNER_ID=111111111, 222222222
 DOWNLOAD_DIR=downloads
+COOKIES_FILE=
 ```
 
 `OWNER_ID` is a comma-separated allowlist. The bot silently ignores messages
 from users who are not on that list.
+
+`COOKIES_FILE` is optional. Set it to a Netscape-format cookies file when
+sites like YouTube require a signed-in browser session:
+
+```sh
+yt-dlp --cookies-from-browser chrome --cookies cookies.txt --skip-download "https://www.youtube.com/"
+```
+
+Then set:
+
+```sh
+COOKIES_FILE=/absolute/path/to/cookies.txt
+```
 
 ## Run
 

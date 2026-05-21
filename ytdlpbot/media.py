@@ -23,9 +23,16 @@ def make_video_id(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()
 
 
-async def extract_info(url: str) -> Dict[str, Any]:
+def _yt_dlp_options(cookies_file: Optional[str] = None) -> Dict[str, Any]:
+    options: Dict[str, Any] = {"quiet": True, "noplaylist": True}
+    if cookies_file:
+        options["cookiefile"] = cookies_file
+    return options
+
+
+async def extract_info(url: str, cookies_file: Optional[str] = None) -> Dict[str, Any]:
     def _extract() -> Dict[str, Any]:
-        ydl_opts = {"quiet": True, "noplaylist": True}
+        ydl_opts = _yt_dlp_options(cookies_file)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             return ydl.sanitize_info(info)
@@ -154,6 +161,7 @@ async def download_media(
     output_dir: str,
     info: Dict[str, Any],
     progress_hook: Optional[ProgressHook] = None,
+    cookies_file: Optional[str] = None,
 ) -> Path:
     download_dir = Path(output_dir) / download_id
     download_dir.mkdir(parents=True, exist_ok=True)
@@ -171,13 +179,12 @@ async def download_media(
         if progress_hook:
             progress_hook(data)
 
-    ydl_opts = {
+    ydl_opts = _yt_dlp_options(cookies_file)
+    ydl_opts.update({
         "format": target_format,
         "outtmpl": str(download_dir / "%(title).200B [%(id)s].%(ext)s"),
-        "quiet": True,
-        "noplaylist": True,
         "progress_hooks": [track_progress],
-    }
+    })
 
     await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(ydl_opts).download([url]))
 

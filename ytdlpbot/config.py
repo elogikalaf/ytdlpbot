@@ -13,6 +13,7 @@ class Settings:
     bot_token: str
     allowed_user_ids: frozenset[int]
     download_dir: str = "downloads"
+    cookies_file: str | None = None
 
 
 def _required_env(name: str) -> str:
@@ -54,4 +55,5 @@ def load_settings() -> Settings:
         bot_token=_required_env("BOT_TOKEN"),
         allowed_user_ids=_parse_allowed_user_ids(owner_ids),
         download_dir=os.getenv("DOWNLOAD_DIR", "downloads"),
+        cookies_file=os.getenv("COOKIES_FILE") or None,
     )

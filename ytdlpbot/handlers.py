@@ -124,7 +124,7 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
 
         try:
             video_id = make_video_id(url)
-            info = await extract_info(url)
+            info = await extract_info(url, cookies_file=settings.cookies_file)
             entry = VideoEntry(info=info, url=url)
             cache.set(video_id, entry)
             keyboard = _build_format_keyboard(info, video_id, entry)
@@ -183,6 +183,7 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
                 settings.download_dir,
                 entry.info,
                 progress_hook=_download_progress_hook(reporter),
+                cookies_file=settings.cookies_file,
             )
             await reporter.done(
                 f"Download complete. Uploading `{output_path.name}` "
