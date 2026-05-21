@@ -26,37 +26,44 @@ async def extract_info(url: str) -> Dict[str, Any]:
     return await asyncio.to_thread(_extract)
 
 
-def choose_extension(url: str, info: Dict[str, Any]) -> str:
-    url_lower = url.lower()
-    if "subtitle" in url_lower or "vtt" in url_lower:
-        return "vtt"
-    if "m3u8" in url_lower:
-        return "mp4"
-    return info.get("ext", "mp4")
-
-
 async def download_media(
     url: str,
-    video_id: str,
+    download_id: str,
     format_id: str,
     output_dir: str,
     info: Dict[str, Any],
     progress_hook: Optional[ProgressHook] = None,
 ) -> Path:
-    output_path = Path(output_dir) / f"file_{video_id}.{choose_extension(url, info)}"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    download_dir = Path(output_dir) / download_id
+    download_dir.mkdir(parents=True, exist_ok=True)
+    downloaded_path: Optional[Path] = None
 
     target_format = (
         "best" if format_id in {"raw", "best"} else f"{format_id}+bestaudio/best"
     )
+
+    def track_progress(data: Dict[str, Any]) -> None:
+        nonlocal downloaded_path
+        filename = data.get("filename")
+        if filename:
+            downloaded_path = Path(filename)
+        if progress_hook:
+            progress_hook(data)
+
     ydl_opts = {
         "format": target_format,
-        "outtmpl": str(output_path),
+        "outtmpl": str(download_dir / "%(title).200B [%(id)s].%(ext)s"),
         "quiet": True,
         "noplaylist": True,
+        "progress_hooks": [track_progress],
     }
-    if progress_hook:
-        ydl_opts["progress_hooks"] = [progress_hook]
 
     await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(ydl_opts).download([url]))
-    return output_path
+    if downloaded_path and downloaded_path.exists():
+        return downloaded_path
+
+    matches = [path for path in download_dir.iterdir() if path.is_file()]
+    if len(matches) == 1:
+        return matches[0]
+
+    raise FileNotFoundError("Downloaded file could not be found")

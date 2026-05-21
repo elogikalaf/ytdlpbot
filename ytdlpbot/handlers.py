@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -212,3 +213,6 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
         finally:
             if output_path and output_path.exists():
                 output_path.unlink()
+                if output_path.parent.name == video_id:
+                    with contextlib.suppress(OSError):
+                        output_path.parent.rmdir()
