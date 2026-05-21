@@ -46,6 +46,18 @@ Install dependencies first:
 pip install -r requirements.txt
 ```
 
+For YouTube downloads, the VPS must also have a JavaScript runtime available to
+yt-dlp. Without this, YouTube may return only storyboard/images and yt-dlp will
+print `n challenge solving failed`.
+
+Recommended VPS setup:
+
+```sh
+python -m pip install -U "yt-dlp[default]"
+sudo apt-get update
+sudo apt-get install -y nodejs
+```
+
 ```sh
 python main.py
 ```

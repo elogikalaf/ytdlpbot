@@ -24,7 +24,17 @@ def make_video_id(url: str) -> str:
 
 
 def _yt_dlp_options(cookies_file: Optional[str] = None) -> Dict[str, Any]:
-    options: Dict[str, Any] = {"quiet": True, "noplaylist": True}
+    options: Dict[str, Any] = {
+        "quiet": True,
+        "noplaylist": True,
+        "js_runtimes": {
+            "deno": {},
+            "node": {},
+            "quickjs": {},
+            "bun": {},
+        },
+        "remote_components": ["ejs:github"],
+    }
     if cookies_file:
         options["cookiefile"] = cookies_file
     return options
@@ -166,35 +176,74 @@ async def download_media(
     download_dir = Path(output_dir) / download_id
     download_dir.mkdir(parents=True, exist_ok=True)
 
-    downloaded_path: Optional[Path] = None
-    target_format = (
-        "best" if format_id in {"raw", "best"} else f"{format_id}+bestaudio/best"
-    )
+    def _format_candidates() -> list[str]:
+        if format_id in {"raw", "best"}:
+            return [
+                "bestvideo+bestaudio/best",
+                "bv*+ba/b",
+                "best",
+            ]
 
-    def track_progress(data: Dict[str, Any]) -> None:
-        nonlocal downloaded_path
-        filename = data.get("filename")
-        if filename:
-            downloaded_path = Path(filename)
-        if progress_hook:
-            progress_hook(data)
+        return [
+            f"{format_id}+bestaudio/best",
+            format_id,
+            "bestvideo+bestaudio/best",
+            "bv*+ba/b",
+            "best",
+        ]
 
-    ydl_opts = _yt_dlp_options(cookies_file)
-    ydl_opts.update({
-        "format": target_format,
-        "outtmpl": str(download_dir / "%(title).200B [%(id)s].%(ext)s"),
-        "progress_hooks": [track_progress],
-    })
+    def _clear_download_dir() -> None:
+        for candidate in download_dir.iterdir():
+            if candidate.is_file():
+                candidate.unlink()
 
-    await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(ydl_opts).download([url]))
+    def _download_once(target_format: str) -> Optional[Path]:
+        downloaded_path: Optional[Path] = None
 
-    if downloaded_path and downloaded_path.exists():
-        output_path = downloaded_path
-    else:
+        def track_progress(data: Dict[str, Any]) -> None:
+            nonlocal downloaded_path
+            filename = data.get("filename")
+            if filename:
+                downloaded_path = Path(filename)
+            if progress_hook:
+                progress_hook(data)
+
+        ydl_opts = _yt_dlp_options(cookies_file)
+        ydl_opts.update(
+            {
+                "format": target_format,
+                "outtmpl": str(download_dir / "%(title).200B [%(id)s].%(ext)s"),
+                "progress_hooks": [track_progress],
+            }
+        )
+
+        yt_dlp.YoutubeDL(ydl_opts).download([url])
+
+        if downloaded_path and downloaded_path.exists():
+            return downloaded_path
+
         matches = [p for p in download_dir.iterdir() if p.is_file()]
         if len(matches) == 1:
-            output_path = matches[0]
-        else:
-            raise FileNotFoundError("Downloaded file could not be found")
+            return matches[0]
+        if matches:
+            return max(matches, key=lambda p: p.stat().st_mtime)
+        return None
 
-    return await _fix_extension_if_needed(output_path, url, info)
+    last_error: Exception | None = None
+    for target_format in _format_candidates():
+        _clear_download_dir()
+        try:
+            output_path = await asyncio.to_thread(_download_once, target_format)
+            if not output_path:
+                raise FileNotFoundError("Downloaded file could not be found")
+            return await _fix_extension_if_needed(output_path, url, info)
+        except Exception as exc:
+            last_error = exc
+            message = str(exc).lower()
+            if "requested format is not available" not in message and "only images are available for download" not in message:
+                raise
+
+    if last_error:
+        raise last_error
+
+    raise FileNotFoundError("Downloaded file could not be found")

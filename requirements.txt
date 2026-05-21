@@ -1,4 +1,4 @@
 pyrogram
 python-dotenv
 tgcrypto
-yt-dlp
+yt-dlp[default]

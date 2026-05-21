@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from pyrogram import Client, filters
 from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
@@ -69,11 +69,29 @@ def _add_format(
     buttons.append([InlineKeyboardButton(label, callback_data=f"dl_{video_id}_{key}")])
 
 
+def _is_downloadable_video_format(item: Dict[str, Any]) -> bool:
+    if not item.get("height"):
+        return False
+    if item.get("vcodec") in {None, "none"}:
+        return False
+
+    ext = str(item.get("ext") or "").lower()
+    if ext in {"gif", "jpg", "jpeg", "mhtml", "png", "webp"}:
+        return False
+
+    protocol = str(item.get("protocol") or "").lower()
+    if protocol in {"mhtml", "images"}:
+        return False
+
+    note = str(item.get("format_note") or "").lower()
+    return not any(value in note for value in ("storyboard", "thumbnail", "image"))
+
+
 def _build_format_keyboard(
     info: Dict[str, Any],
     video_id: str,
     entry: VideoEntry,
-) -> InlineKeyboardMarkup:
+) -> Optional[InlineKeyboardMarkup]:
     buttons: List[List[InlineKeyboardButton]] = []
     formats = info.get("formats", [])
 
@@ -84,6 +102,9 @@ def _build_format_keyboard(
     seen_heights = set()
     index = 0
     for item in formats:
+        if not _is_downloadable_video_format(item):
+            continue
+
         height = item.get("height")
         if height not in {144, 240, 360, 480, 720, 1080, 1440, 2160} or height in seen_heights:
             continue
@@ -96,7 +117,7 @@ def _build_format_keyboard(
         index += 1
 
     if not buttons:
-        _add_format(buttons, entry, video_id, "best", "Best Quality", "best")
+        return None
 
     return InlineKeyboardMarkup(buttons)
 
@@ -135,6 +156,15 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
                 if duration
                 else ""
             )
+
+            if keyboard is None:
+                await status_message.edit(
+                    f"**Title:** `{title}`{duration_text}\n"
+                    "No downloadable video formats were found. On YouTube this "
+                    "usually means the VPS still needs yt-dlp challenge support "
+                    "and a JavaScript runtime."
+                )
+                return
 
             await status_message.edit(
                 f"**Title:** `{title}`{duration_text}\nSelect format:",
