@@ -22,6 +22,209 @@ _VIDEO_HEIGHTS = {144, 240, 360, 480, 720, 1080, 1440, 2160}
 _SUBTITLE_CALLBACK_PREFIX = "sub"
 _DOWNLOAD_CALLBACK_PREFIX = "dl"
 _MAX_SUBTITLE_BUTTONS = 8
+_PREFERRED_SUBTITLE_LANGUAGES = (
+    "en",
+    "fa",
+    "es",
+    "fr",
+    "de",
+    "ar",
+    "tr",
+    "ru",
+)
+_LANGUAGE_NAMES = {
+    "aa": "Afar",
+    "ab": "Abkhazian",
+    "ae": "Avestan",
+    "af": "Afrikaans",
+    "ak": "Akan",
+    "am": "Amharic",
+    "an": "Aragonese",
+    "ar": "Arabic",
+    "as": "Assamese",
+    "av": "Avaric",
+    "ay": "Aymara",
+    "az": "Azerbaijani",
+    "ba": "Bashkir",
+    "be": "Belarusian",
+    "bg": "Bulgarian",
+    "bh": "Bihari",
+    "bi": "Bislama",
+    "bm": "Bambara",
+    "bn": "Bengali",
+    "bo": "Tibetan",
+    "br": "Breton",
+    "bs": "Bosnian",
+    "ca": "Catalan",
+    "ce": "Chechen",
+    "ch": "Chamorro",
+    "co": "Corsican",
+    "cr": "Cree",
+    "cs": "Czech",
+    "cu": "Church Slavic",
+    "cv": "Chuvash",
+    "cy": "Welsh",
+    "da": "Danish",
+    "de": "German",
+    "dv": "Divehi",
+    "dz": "Dzongkha",
+    "ee": "Ewe",
+    "el": "Greek",
+    "en": "English",
+    "en-us": "English",
+    "en-gb": "English",
+    "eo": "Esperanto",
+    "es": "Spanish",
+    "et": "Estonian",
+    "eu": "Basque",
+    "fa": "Persian",
+    "ff": "Fulah",
+    "fi": "Finnish",
+    "fj": "Fijian",
+    "fo": "Faroese",
+    "fr": "French",
+    "fy": "Western Frisian",
+    "ga": "Irish",
+    "gd": "Scottish Gaelic",
+    "gl": "Galician",
+    "gn": "Guarani",
+    "gu": "Gujarati",
+    "gv": "Manx",
+    "ha": "Hausa",
+    "he": "Hebrew",
+    "hi": "Hindi",
+    "ho": "Hiri Motu",
+    "hr": "Croatian",
+    "ht": "Haitian Creole",
+    "hu": "Hungarian",
+    "hy": "Armenian",
+    "hz": "Herero",
+    "ia": "Interlingua",
+    "id": "Indonesian",
+    "ie": "Interlingue",
+    "ig": "Igbo",
+    "ii": "Sichuan Yi",
+    "ik": "Inupiaq",
+    "io": "Ido",
+    "is": "Icelandic",
+    "it": "Italian",
+    "iu": "Inuktitut",
+    "ja": "Japanese",
+    "jv": "Javanese",
+    "ka": "Georgian",
+    "kg": "Kongo",
+    "ki": "Kikuyu",
+    "kj": "Kuanyama",
+    "kk": "Kazakh",
+    "kl": "Kalaallisut",
+    "km": "Khmer",
+    "kn": "Kannada",
+    "ko": "Korean",
+    "kr": "Kanuri",
+    "ks": "Kashmiri",
+    "ku": "Kurdish",
+    "kv": "Komi",
+    "kw": "Cornish",
+    "ky": "Kyrgyz",
+    "la": "Latin",
+    "lb": "Luxembourgish",
+    "lg": "Ganda",
+    "li": "Limburgish",
+    "ln": "Lingala",
+    "lo": "Lao",
+    "lt": "Lithuanian",
+    "lu": "Luba-Katanga",
+    "lv": "Latvian",
+    "mg": "Malagasy",
+    "mh": "Marshallese",
+    "mi": "Maori",
+    "mk": "Macedonian",
+    "ml": "Malayalam",
+    "mn": "Mongolian",
+    "mr": "Marathi",
+    "ms": "Malay",
+    "mt": "Maltese",
+    "my": "Burmese",
+    "na": "Nauru",
+    "nb": "Norwegian Bokmal",
+    "nd": "Northern Ndebele",
+    "ne": "Nepali",
+    "ng": "Ndonga",
+    "nl": "Dutch",
+    "nn": "Norwegian Nynorsk",
+    "no": "Norwegian",
+    "nr": "Southern Ndebele",
+    "nv": "Navajo",
+    "ny": "Nyanja",
+    "oc": "Occitan",
+    "oj": "Ojibwa",
+    "om": "Oromo",
+    "or": "Odia",
+    "os": "Ossetian",
+    "pa": "Punjabi",
+    "pi": "Pali",
+    "pl": "Polish",
+    "ps": "Pashto",
+    "pt": "Portuguese",
+    "pt-br": "Portuguese",
+    "qu": "Quechua",
+    "rm": "Romansh",
+    "rn": "Rundi",
+    "ro": "Romanian",
+    "ru": "Russian",
+    "rw": "Kinyarwanda",
+    "sa": "Sanskrit",
+    "sc": "Sardinian",
+    "sd": "Sindhi",
+    "se": "Northern Sami",
+    "sg": "Sango",
+    "si": "Sinhala",
+    "sk": "Slovak",
+    "sl": "Slovenian",
+    "sm": "Samoan",
+    "sn": "Shona",
+    "so": "Somali",
+    "sq": "Albanian",
+    "sr": "Serbian",
+    "ss": "Swati",
+    "st": "Southern Sotho",
+    "su": "Sundanese",
+    "sv": "Swedish",
+    "sw": "Swahili",
+    "ta": "Tamil",
+    "te": "Telugu",
+    "tg": "Tajik",
+    "th": "Thai",
+    "ti": "Tigrinya",
+    "tk": "Turkmen",
+    "tl": "Tagalog",
+    "tn": "Tswana",
+    "to": "Tongan",
+    "tr": "Turkish",
+    "ts": "Tsonga",
+    "tt": "Tatar",
+    "tw": "Twi",
+    "ty": "Tahitian",
+    "ug": "Uyghur",
+    "uk": "Ukrainian",
+    "ur": "Urdu",
+    "uz": "Uzbek",
+    "ve": "Venda",
+    "vi": "Vietnamese",
+    "vo": "Volapuk",
+    "wa": "Walloon",
+    "wo": "Wolof",
+    "xh": "Xhosa",
+    "yi": "Yiddish",
+    "yo": "Yoruba",
+    "za": "Zhuang",
+    "zh": "Chinese",
+    "zh-cn": "Chinese",
+    "zh-hans": "Chinese",
+    "zh-hant": "Chinese",
+    "zh-tw": "Chinese",
+    "zu": "Zulu",
+}
 
 
 def _positive_float(value: Any) -> Optional[float]:
@@ -96,14 +299,44 @@ def _add_format(
     )
 
 
-def _language_name(language: str) -> str:
-    return language.replace("-", " ").replace("_", " ").title()
+def _track_name(tracks: Any) -> Optional[str]:
+    if not isinstance(tracks, list):
+        return None
+
+    for track in tracks:
+        if not isinstance(track, dict):
+            continue
+        name = track.get("name")
+        if name:
+            return str(name)
+
+    return None
 
 
-def _subtitle_label(language: str, source: str) -> str:
-    label = _language_name(language)
+def _clean_language_code(language: str) -> str:
+    return language.split("-", 1)[0].split("_", 1)[0].lower()
+
+
+def _language_name(language: str, tracks: Any = None) -> str:
+    track_name = _track_name(tracks)
+    if track_name:
+        return track_name
+
+    normalized = language.replace("_", "-").lower()
+    if normalized in _LANGUAGE_NAMES:
+        return _LANGUAGE_NAMES[normalized]
+
+    base_language = _clean_language_code(language)
+    if base_language in _LANGUAGE_NAMES:
+        return _LANGUAGE_NAMES[base_language]
+
+    return f"Language: {language}"
+
+
+def _subtitle_label(language: str, source: str, tracks: Any) -> str:
+    label = _language_name(language, tracks)
     if source == "automatic_captions":
-        label = f"{label} auto"
+        label = f"{label} (generated)"
     return label[:32]
 
 
@@ -119,23 +352,52 @@ def _available_subtitles(info: Dict[str, Any]) -> list[SubtitleChoice]:
         SubtitleChoice(language=None, label="No subtitles", source="none")
     ]
     seen_languages: set[str] = set()
+    subtitle_items: list[tuple[str, str, Any]] = []
 
     for source, subtitles in _subtitle_sources(info):
-        for language, tracks in subtitles.items():
-            if language in seen_languages or not tracks:
-                continue
-            choices.append(
-                SubtitleChoice(
-                    language=language,
-                    label=_subtitle_label(language, source),
-                    source=source,
-                )
+        subtitle_items.extend(
+            (source, language, tracks)
+            for language, tracks in subtitles.items()
+            if tracks
+        )
+
+    for source, language, tracks in _ranked_subtitle_items(subtitle_items):
+        if language in seen_languages:
+            continue
+        choices.append(
+            SubtitleChoice(
+                language=language,
+                label=_subtitle_label(language, source, tracks),
+                source=source,
             )
-            seen_languages.add(language)
-            if len(choices) >= _MAX_SUBTITLE_BUTTONS + 1:
-                return choices
+        )
+        seen_languages.add(language)
+        if len(choices) >= _MAX_SUBTITLE_BUTTONS + 1:
+            return choices
 
     return choices
+
+
+def _ranked_subtitle_items(
+    subtitles: list[tuple[str, str, Any]],
+) -> list[tuple[str, str, Any]]:
+    def sort_key(item: tuple[str, str, Any]) -> tuple[int, int, str]:
+        source, language, _ = item
+        normalized = language.replace("_", "-").lower()
+        base_language = _clean_language_code(language)
+        try:
+            preferred_index = _PREFERRED_SUBTITLE_LANGUAGES.index(normalized)
+        except ValueError:
+            try:
+                preferred_index = _PREFERRED_SUBTITLE_LANGUAGES.index(base_language)
+            except ValueError:
+                preferred_index = len(_PREFERRED_SUBTITLE_LANGUAGES)
+
+        known_language = 0 if base_language in _LANGUAGE_NAMES else 1
+        source_rank = 0 if source == "subtitles" else 1
+        return preferred_index, known_language, source_rank, normalized
+
+    return sorted(subtitles, key=sort_key)
 
 
 def _store_subtitle_choices(entry: VideoEntry, info: Dict[str, Any]) -> None:
