@@ -5,10 +5,19 @@ from typing import Any, Dict, Optional
 
 
 @dataclass
+class SubtitleChoice:
+    language: Optional[str]
+    label: str
+    source: str
+
+
+@dataclass
 class VideoEntry:
     info: Dict[str, Any]
     url: str
     formats: Dict[str, str] = field(default_factory=dict)
+    subtitles: Dict[str, SubtitleChoice] = field(default_factory=dict)
+    selected_subtitle_key: str = "none"
 
 
 class VideoCache:
@@ -20,4 +29,3 @@ class VideoCache:
 
     def get(self, video_id: str) -> Optional[VideoEntry]:
         return self._items.get(video_id)
-

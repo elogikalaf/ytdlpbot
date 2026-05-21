@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -11,13 +12,16 @@ from ytdlpbot.auth import (
     reject_callback_if_unauthorized,
     reject_message_if_unauthorized,
 )
-from ytdlpbot.cache import VideoCache, VideoEntry
+from ytdlpbot.cache import SubtitleChoice, VideoCache, VideoEntry
 from ytdlpbot.config import Settings
 from ytdlpbot.media import VIDEO_EXTENSIONS, download_media, extract_info, make_video_id
 from ytdlpbot.progress import ProgressReporter, format_bytes
 
 
 _VIDEO_HEIGHTS = {144, 240, 360, 480, 720, 1080, 1440, 2160}
+_SUBTITLE_CALLBACK_PREFIX = "sub"
+_DOWNLOAD_CALLBACK_PREFIX = "dl"
+_MAX_SUBTITLE_BUTTONS = 8
 
 
 def _positive_float(value: Any) -> Optional[float]:
@@ -82,7 +86,100 @@ def _add_format(
     format_id: str,
 ) -> None:
     entry.formats[key] = format_id
-    buttons.append([InlineKeyboardButton(label, callback_data=f"dl_{video_id}_{key}")])
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                label,
+                callback_data=f"{_DOWNLOAD_CALLBACK_PREFIX}_{video_id}_{key}",
+            )
+        ]
+    )
+
+
+def _language_name(language: str) -> str:
+    return language.replace("-", " ").replace("_", " ").title()
+
+
+def _subtitle_label(language: str, source: str) -> str:
+    label = _language_name(language)
+    if source == "automatic_captions":
+        label = f"{label} auto"
+    return label[:32]
+
+
+def _subtitle_sources(info: Dict[str, Any]) -> list[tuple[str, Dict[str, Any]]]:
+    return [
+        ("subtitles", info.get("subtitles") or {}),
+        ("automatic_captions", info.get("automatic_captions") or {}),
+    ]
+
+
+def _available_subtitles(info: Dict[str, Any]) -> list[SubtitleChoice]:
+    choices: list[SubtitleChoice] = [
+        SubtitleChoice(language=None, label="No subtitles", source="none")
+    ]
+    seen_languages: set[str] = set()
+
+    for source, subtitles in _subtitle_sources(info):
+        for language, tracks in subtitles.items():
+            if language in seen_languages or not tracks:
+                continue
+            choices.append(
+                SubtitleChoice(
+                    language=language,
+                    label=_subtitle_label(language, source),
+                    source=source,
+                )
+            )
+            seen_languages.add(language)
+            if len(choices) >= _MAX_SUBTITLE_BUTTONS + 1:
+                return choices
+
+    return choices
+
+
+def _store_subtitle_choices(entry: VideoEntry, info: Dict[str, Any]) -> None:
+    entry.subtitles.clear()
+    for index, choice in enumerate(_available_subtitles(info)):
+        key = "none" if choice.language is None else f"s{index}"
+        entry.subtitles[key] = choice
+    entry.selected_subtitle_key = "none"
+
+
+def _selected_subtitle(entry: VideoEntry) -> SubtitleChoice:
+    return entry.subtitles.get(
+        entry.selected_subtitle_key,
+        SubtitleChoice(language=None, label="No subtitles", source="none"),
+    )
+
+
+def _subtitle_status(entry: VideoEntry) -> str:
+    selected = _selected_subtitle(entry)
+    return selected.label if selected.language else "None"
+
+
+def _subtitle_buttons(video_id: str, entry: VideoEntry) -> list[list[InlineKeyboardButton]]:
+    if len(entry.subtitles) <= 1:
+        return []
+
+    rows: list[list[InlineKeyboardButton]] = []
+    current_row: list[InlineKeyboardButton] = []
+    for key, choice in entry.subtitles.items():
+        prefix = "[x] " if key == entry.selected_subtitle_key else ""
+        current_row.append(
+            InlineKeyboardButton(
+                f"{prefix}{choice.label}",
+                callback_data=f"{_SUBTITLE_CALLBACK_PREFIX}_{video_id}_{key}",
+            )
+        )
+        if len(current_row) == 2:
+            rows.append(current_row)
+            current_row = []
+
+    if current_row:
+        rows.append(current_row)
+
+    return rows
 
 
 def _is_downloadable_video_format(item: Dict[str, Any]) -> bool:
@@ -190,6 +287,7 @@ def _build_format_keyboard(
     formats = info.get("formats", [])
     duration = _duration_seconds(info)
     audio_format = _best_audio_format(formats, duration)
+    buttons.extend(_subtitle_buttons(video_id, entry))
 
     if not formats or (len(formats) == 1 and not formats[0].get("height")):
         _add_format(buttons, entry, video_id, "raw", "Download File/Subtitle", "raw")
@@ -242,6 +340,7 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
             video_id = make_video_id(url)
             info = await extract_info(url, cookies_file=settings.cookies_file)
             entry = VideoEntry(info=info, url=url)
+            _store_subtitle_choices(entry, info)
             cache.set(video_id, entry)
             keyboard = _build_format_keyboard(info, video_id, entry)
             title = _title(info)
@@ -262,11 +361,56 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
                 return
 
             await status_message.edit(
-                f"**Title:** `{title}`{duration_text}\nSelect format:",
+                f"**Title:** `{title}`{duration_text}\n"
+                f"Soft subtitles: `{_subtitle_status(entry)}`\n"
+                "Select subtitles, then format:",
                 reply_markup=keyboard,
             )
         except Exception as exc:
             await status_message.edit(f"Error: {exc}")
+
+    @app.on_callback_query(filters.regex(r"^sub_"))
+    async def handle_subtitle_selection(client: Client, callback_query: CallbackQuery) -> None:
+        if await reject_callback_if_unauthorized(callback_query, settings):
+            return
+
+        try:
+            _, video_id, subtitle_key = callback_query.data.split("_", 2)
+        except (AttributeError, ValueError):
+            await callback_query.answer("Subtitle error.", show_alert=True)
+            return
+
+        entry = cache.get(video_id)
+        if not entry:
+            await callback_query.answer(
+                "Session expired. Please send the link again.",
+                show_alert=True,
+            )
+            return
+
+        if subtitle_key not in entry.subtitles:
+            await callback_query.answer(
+                "Subtitle expired. Please send the link again.",
+                show_alert=True,
+            )
+            return
+
+        entry.selected_subtitle_key = subtitle_key
+        title = _title(entry.info)
+        duration = entry.info.get("duration")
+        duration_text = (
+            f"\nDuration: `{duration // 60}:{duration % 60:02d}`"
+            if duration
+            else ""
+        )
+        keyboard = _build_format_keyboard(entry.info, video_id, entry)
+        await callback_query.message.edit(
+            f"**Title:** `{title}`{duration_text}\n"
+            f"Soft subtitles: `{_subtitle_status(entry)}`\n"
+            "Select subtitles, then format:",
+            reply_markup=keyboard,
+        )
+        await callback_query.answer(f"Subtitles: {_subtitle_status(entry)}")
 
     @app.on_callback_query(filters.regex(r"^dl_"))
     async def handle_download(client: Client, callback_query: CallbackQuery) -> None:
@@ -295,6 +439,7 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
             )
             return
 
+        subtitle_language = _selected_subtitle(entry).language
         output_path: Path | None = None
         await callback_query.answer("Starting download...")
         reporter = ProgressReporter(callback_query.message, _title(entry.info))
@@ -309,6 +454,7 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
                 entry.info,
                 progress_hook=_download_progress_hook(reporter),
                 cookies_file=settings.cookies_file,
+                subtitle_language=subtitle_language,
             )
             await reporter.done(
                 f"Download complete. Uploading `{output_path.name}` "
@@ -337,8 +483,6 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
         except Exception as exc:
             await reporter.fail(f"Failed: {exc}")
         finally:
-            if output_path and output_path.exists():
-                output_path.unlink()
-                if output_path.parent.name == video_id:
-                    with contextlib.suppress(OSError):
-                        output_path.parent.rmdir()
+            if output_path and output_path.parent.name == video_id:
+                with contextlib.suppress(OSError):
+                    shutil.rmtree(output_path.parent)

@@ -172,6 +172,7 @@ async def download_media(
     info: Dict[str, Any],
     progress_hook: Optional[ProgressHook] = None,
     cookies_file: Optional[str] = None,
+    subtitle_language: Optional[str] = None,
 ) -> Path:
     download_dir = Path(output_dir) / download_id
     download_dir.mkdir(parents=True, exist_ok=True)
@@ -216,6 +217,22 @@ async def download_media(
                 "progress_hooks": [track_progress],
             }
         )
+        if subtitle_language:
+            ydl_opts.update(
+                {
+                    "writesubtitles": True,
+                    "writeautomaticsub": True,
+                    "subtitleslangs": [subtitle_language],
+                    "subtitlesformat": "vtt/best",
+                    "embedsubtitles": True,
+                    "postprocessors": [
+                        {
+                            "key": "FFmpegEmbedSubtitle",
+                            "already_have_subtitle": False,
+                        }
+                    ],
+                }
+            )
 
         yt_dlp.YoutubeDL(ydl_opts).download([url])
 
