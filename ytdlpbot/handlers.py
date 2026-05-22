@@ -290,6 +290,8 @@ def _download_progress_hook(
         if status == "downloading":
             current = data.get("downloaded_bytes") or 0
             total = data.get("total_bytes") or data.get("total_bytes_estimate")
+            if total and current >= total:
+                return
             reporter.sync_update(
                 _download_status_label(data, video_format_id, audio_format_id),
                 current,
@@ -298,13 +300,11 @@ def _download_progress_hook(
                 eta=data.get("eta"),
             )
         elif status == "finished":
-            total = data.get("total_bytes") or data.get("downloaded_bytes") or 0
-            reporter.sync_update(
-                "Processing downloaded file...",
-                total,
-                total,
-                force=True,
-            )
+            # yt-dlp fires this for each selected stream. For exact video+audio
+            # downloads, forcing a 100% bar here makes short audio streams look
+            # stuck before the next phase starts. Show a neutral transition
+            # message instead and let the next progress event draw the bar.
+            reporter.sync_done("Processing downloaded streams...")
 
     return hook
 

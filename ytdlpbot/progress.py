@@ -69,6 +69,12 @@ class ProgressReporter:
     async def fail(self, status: str) -> None:
         await self._edit(f"**{self.title}**\n{status}", force=True)
 
+    def sync_done(self, status: str) -> None:
+        asyncio.run_coroutine_threadsafe(
+            self.done(status),
+            self.loop,
+        )
+
     async def update(
         self,
         status: str,
@@ -135,4 +141,3 @@ class ProgressReporter:
             await self.message.edit(text)
         except Exception:
             pass
-
