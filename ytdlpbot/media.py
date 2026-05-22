@@ -181,6 +181,23 @@ def _subtitle_candidates(download_dir: Path, media_path: Path) -> list[Path]:
     return sorted(candidates, key=lambda path: path.stat().st_mtime, reverse=True)
 
 
+def _is_subtitle_path(path: Path) -> bool:
+    return path.suffix.lower() in SUBTITLE_EXTENSIONS
+
+
+def _media_candidates(download_dir: Path) -> list[Path]:
+    candidates: list[Path] = []
+    for candidate in download_dir.iterdir():
+        if not candidate.is_file():
+            continue
+        if _is_subtitle_path(candidate):
+            continue
+        if candidate.suffix.lower() == ".part":
+            continue
+        candidates.append(candidate)
+    return candidates
+
+
 async def download_media(
     url: str,
     download_id: str,
@@ -252,7 +269,9 @@ async def download_media(
             nonlocal downloaded_path
             filename = data.get("filename")
             if filename:
-                downloaded_path = Path(filename)
+                candidate = Path(filename)
+                if not _is_subtitle_path(candidate):
+                    downloaded_path = candidate
             if progress_hook:
                 progress_hook(data)
 
@@ -292,14 +311,27 @@ async def download_media(
         )
         yt_dlp.YoutubeDL(ydl_opts).download([url])
 
-        if downloaded_path and downloaded_path.exists():
+        if (
+            downloaded_path
+            and downloaded_path.exists()
+            and not _is_subtitle_path(downloaded_path)
+        ):
             return downloaded_path
 
-        matches = [p for p in download_dir.iterdir() if p.is_file()]
+        matches = _media_candidates(download_dir)
         if len(matches) == 1:
             return matches[0]
         if matches:
             return max(matches, key=lambda p: p.stat().st_mtime)
+        subtitle_matches = [
+            p for p in download_dir.iterdir() if p.is_file() and _is_subtitle_path(p)
+        ]
+        if subtitle_matches:
+            logger.warning(
+                "yt-dlp produced subtitle files but no media file in %s: %s",
+                download_dir,
+                ", ".join(sorted(path.name for path in subtitle_matches)),
+            )
         return None
 
     target_format = _exact_format_selector()
@@ -313,4 +345,12 @@ async def download_media(
             subtitle_path = candidates[0] if candidates else None
         return output_path, subtitle_path
 
-    raise FileNotFoundError("Downloaded file could not be found")
+    subtitle_matches = [
+        p for p in download_dir.iterdir() if p.is_file() and _is_subtitle_path(p)
+    ]
+    if subtitle_matches:
+        raise FileNotFoundError(
+            "yt-dlp downloaded subtitles but did not produce a media file"
+        )
+
+    raise FileNotFoundError("Downloaded media file could not be found")
