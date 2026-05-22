@@ -194,6 +194,9 @@ async def download_media(
             return str(raw_format_id) if raw_format_id else None
 
         video_item = _format_item(format_id)
+        selected_video_has_audio = bool(
+            video_item and video_item.get("acodec") not in {None, "none"}
+        )
         selected_audio_item = _format_item(audio_format_id) if audio_format_id else None
         selected_audio_is_audio_only = bool(
             selected_audio_item
@@ -205,17 +208,20 @@ async def download_media(
         # "<video>+best audio" and then retried broader automatic selectors.
         # That loses the user's language choice on multilingual YouTube videos,
         # where original, dubbed, and generated audio are separate streams.
-        if audio_format_id and audio_format_id != format_id and selected_audio_is_audio_only:
+        if (
+            audio_format_id
+            and audio_format_id != format_id
+            and selected_audio_is_audio_only
+            and not selected_video_has_audio
+        ):
             return f"{format_id}+{audio_format_id}"
         if audio_format_id:
             logger.warning(
-                "Selected audio format %s is muxed or otherwise unsuitable for "
-                "separate merging; falling back to the exact video format %s.",
+                "Cannot cleanly merge selected audio format %s with video format %s; "
+                "falling back to the exact video format.",
                 audio_format_id,
                 format_id,
             )
-            return format_id
-        if selected_video_has_audio:
             return format_id
         return format_id
 

@@ -32,8 +32,10 @@ class VideoEntry:
     formats: Dict[str, str] = field(default_factory=dict)
     audio_tracks: Dict[str, AudioTrack] = field(default_factory=dict)
     subtitles: Dict[str, SubtitleChoice] = field(default_factory=dict)
+    selected_video_key: Optional[str] = None
     selected_audio_key: Optional[str] = None
     selected_subtitle_key: str = "none"
+    current_step: str = "audio"
 
 
 class VideoCache:

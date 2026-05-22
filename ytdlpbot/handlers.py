@@ -23,6 +23,7 @@ _VIDEO_HEIGHTS = {144, 240, 360, 480, 720, 1080, 1440, 2160}
 _SUBTITLE_CALLBACK_PREFIX = "sub"
 _AUDIO_CALLBACK_PREFIX = "aud"
 _DOWNLOAD_CALLBACK_PREFIX = "dl"
+_NAV_CALLBACK_PREFIX = "nav"
 _MAX_SUBTITLE_BUTTONS = 8
 _PREFERRED_SUBTITLE_LANGUAGES = (
     "en",
@@ -503,6 +504,66 @@ def _audio_status(entry: VideoEntry) -> str:
     return _audio_label(selected) if selected else "None"
 
 
+def _format_duration_text(info: Dict[str, Any]) -> str:
+    duration = info.get("duration")
+    if not duration:
+        return ""
+    return f"\nDuration: `{duration // 60}:{duration % 60:02d}`"
+
+
+def _screen_text(entry: VideoEntry, step: str) -> str:
+    title = _title(entry.info)
+    if step == "audio":
+        return (
+            f"**Title:** `{title}`{_format_duration_text(entry.info)}\n"
+            "Step 1/3: Choose audio"
+        )
+    if step == "subtitle":
+        return (
+            f"**Title:** `{title}`{_format_duration_text(entry.info)}\n"
+            f"Audio: `{_audio_status(entry)}`\n"
+            "Step 2/3: Choose subtitles"
+        )
+    return (
+        f"**Title:** `{title}`{_format_duration_text(entry.info)}\n"
+        f"Audio: `{_audio_status(entry)}`\n"
+        f"Subtitles: `{_subtitle_status(entry)}`\n"
+        "Step 3/3: Choose video quality"
+    )
+
+
+def _edit_step_message(
+    callback_query: CallbackQuery,
+    video_id: str,
+    entry: VideoEntry,
+    step: str,
+):
+    step = _screen_for_step(entry, step)
+    entry.current_step = step
+    keyboard = _step_keyboard(video_id, entry, step)
+    if keyboard is None:
+        return callback_query.message.edit(
+            f"**Title:** `{_title(entry.info)}`{_format_duration_text(entry.info)}\n"
+            "No downloadable video formats were found. On YouTube this usually "
+            "means the VPS still needs yt-dlp challenge support and a JavaScript runtime."
+        )
+    return callback_query.message.edit(
+        _screen_text(entry, step),
+        reply_markup=keyboard,
+    )
+
+
+def _navigation_button(video_id: str, target_step: str, label: str) -> list[list[InlineKeyboardButton]]:
+    return [
+        [
+            InlineKeyboardButton(
+                label,
+                callback_data=f"{_NAV_CALLBACK_PREFIX}_{video_id}_{target_step}",
+            )
+        ]
+    ]
+
+
 def _audio_format_item(info: Dict[str, Any], track: Optional[AudioTrack]) -> Optional[Dict[str, Any]]:
     if not track:
         return None
@@ -512,35 +573,76 @@ def _audio_format_item(info: Dict[str, Any], track: Optional[AudioTrack]) -> Opt
     return None
 
 
+def _audio_variant_key(track: AudioTrack) -> tuple[str, bool, bool, bool, bool]:
+    note = (track.format_note or "").lower()
+    return (
+        (track.language or track.language_display).lower(),
+        track.is_original,
+        track.is_default,
+        "dub" in note,
+        "generated" in note or "auto" in note,
+    )
+
+
+def _visible_audio_items(entry: VideoEntry) -> list[tuple[str, AudioTrack]]:
+    source_items = [
+        (key, track) for key, track in entry.audio_tracks.items() if track.is_audio_only
+    ] or list(entry.audio_tracks.items())
+    best_by_variant: dict[tuple[str, bool, bool, bool, bool], tuple[str, AudioTrack, int]] = {}
+
+    for index, (key, track) in enumerate(source_items):
+        variant_key = _audio_variant_key(track)
+        current = best_by_variant.get(variant_key)
+        if current is None:
+            best_by_variant[variant_key] = (key, track, index)
+            continue
+
+        _, current_track, current_index = current
+        candidate_score = (
+            _audio_default_score(track, index),
+            track.abr or 0,
+        )
+        current_score = (
+            _audio_default_score(current_track, current_index),
+            current_track.abr or 0,
+        )
+        if candidate_score > current_score:
+            best_by_variant[variant_key] = (key, track, index)
+
+    return [
+        (key, track)
+        for key, track, _ in sorted(
+            best_by_variant.values(),
+            key=lambda item: (
+                -_audio_default_score(item[1], item[2])[0],
+                item[1].language_display,
+                item[2],
+            ),
+        )
+    ]
+
+
 def _audio_buttons(video_id: str, entry: VideoEntry) -> list[list[InlineKeyboardButton]]:
     if not entry.audio_tracks:
         return []
 
     rows: list[list[InlineKeyboardButton]] = []
-    current_row: list[InlineKeyboardButton] = []
-    audio_only_items = [
-        (key, track) for key, track in entry.audio_tracks.items() if track.is_audio_only
-    ]
-    # Exact video+audio merging requires an audio-only stream. Muxed formats are
-    # still logged and kept in state for odd extractors, but when YouTube gives
-    # separate language streams those are the only choices exposed here.
-    visible_tracks = audio_only_items or list(entry.audio_tracks.items())
-    for key, track in visible_tracks:
+    for key, track in _visible_audio_items(entry):
         prefix = "[x] " if key == entry.selected_audio_key else ""
-        current_row.append(
-            InlineKeyboardButton(
-                f"{prefix}{_audio_label(track)}",
-                callback_data=f"{_AUDIO_CALLBACK_PREFIX}_{video_id}_{key}",
-            )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"{prefix}{_audio_label(track)}",
+                    callback_data=f"{_AUDIO_CALLBACK_PREFIX}_{video_id}_{key}",
+                )
+            ]
         )
-        if len(current_row) == 2:
-            rows.append(current_row)
-            current_row = []
-
-    if current_row:
-        rows.append(current_row)
 
     return rows
+
+
+def _needs_audio_step(entry: VideoEntry) -> bool:
+    return len(_visible_audio_items(entry)) > 1
 
 
 def _subtitle_label(language: str, source: str, tracks: Any) -> str:
@@ -635,21 +737,16 @@ def _subtitle_buttons(video_id: str, entry: VideoEntry) -> list[list[InlineKeybo
         return []
 
     rows: list[list[InlineKeyboardButton]] = []
-    current_row: list[InlineKeyboardButton] = []
     for key, choice in entry.subtitles.items():
         prefix = "[x] " if key == entry.selected_subtitle_key else ""
-        current_row.append(
-            InlineKeyboardButton(
-                f"{prefix}{choice.label}",
-                callback_data=f"{_SUBTITLE_CALLBACK_PREFIX}_{video_id}_{key}",
-            )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"{prefix}{choice.label}",
+                    callback_data=f"{_SUBTITLE_CALLBACK_PREFIX}_{video_id}_{key}",
+                )
+            ]
         )
-        if len(current_row) == 2:
-            rows.append(current_row)
-            current_row = []
-
-    if current_row:
-        rows.append(current_row)
 
     return rows
 
@@ -734,61 +831,138 @@ def _download_size_label(
     return _format_size(total_size, estimated=estimated)
 
 
-def _build_format_keyboard(
-    info: Dict[str, Any],
-    video_id: str,
-    entry: VideoEntry,
-) -> Optional[InlineKeyboardMarkup]:
-    buttons: List[List[InlineKeyboardButton]] = []
-    entry.formats.clear()
+def _best_video_by_height(info: Dict[str, Any]) -> list[Dict[str, Any]]:
     formats = info.get("formats", [])
     duration = _duration_seconds(info)
-    audio_format = _audio_format_item(info, _selected_audio(entry))
-    has_audio_only_stream = any(
-        isinstance(item, dict) and _is_audio_format(item) for item in formats
-    )
-    buttons.extend(_subtitle_buttons(video_id, entry))
-    buttons.extend(_audio_buttons(video_id, entry))
+    height_map: dict[int, list[tuple[int, Dict[str, Any]]]] = {}
 
-    if not formats or (len(formats) == 1 and not formats[0].get("height")):
-        _add_format(buttons, entry, video_id, "raw", "Download File/Subtitle", "raw")
-        return InlineKeyboardMarkup(buttons)
-
-    seen_heights = set()
-    index = 0
-    added_format = False
-    for item in formats:
-        if not _is_downloadable_video_format(item):
+    for index, item in enumerate(formats):
+        if not isinstance(item, dict) or not _is_downloadable_video_format(item):
             continue
-        if has_audio_only_stream and item.get("acodec") not in {None, "none"}:
-            continue
-
         height = item.get("height")
-        if height not in _VIDEO_HEIGHTS or height in seen_heights:
+        if height not in _VIDEO_HEIGHTS:
             continue
+        height_map.setdefault(height, []).append((index, item))
 
+    def score(candidate: tuple[int, Dict[str, Any]]) -> tuple[int, float, float, int]:
+        index, item = candidate
+        # Prefer video-only streams for clean explicit video+audio merging, but
+        # keep muxed formats as candidates so qualities like 720p/1080p do not
+        # disappear when YouTube exposes them only as combined streams.
+        audio_free = 1 if item.get("acodec") in {None, "none"} else 0
+        bitrate = _positive_float(item.get("vbr")) or _positive_float(item.get("tbr")) or 0
+        size, _ = _item_size(item, duration)
+        return audio_free, bitrate, size or 0, -index
+
+    return [
+        max(height_map[height], key=score)[1]
+        for height in sorted(height_map, reverse=True)
+    ]
+
+
+def _store_video_choices(entry: VideoEntry, info: Dict[str, Any]) -> None:
+    entry.formats.clear()
+    entry.selected_video_key = None
+
+    for index, item in enumerate(_best_video_by_height(info)):
         key = f"f{index}"
-        label = f"{height}p ({_download_size_label(item, audio_format, duration)})"
-        _add_format(buttons, entry, video_id, key, label, item["format_id"])
-        seen_heights.add(height)
-        index += 1
-        added_format = True
+        entry.formats[key] = str(item["format_id"])
 
-    if not added_format and entry.audio_tracks:
-        _add_format(
-            buttons,
-            entry,
-            video_id,
-            "raw",
-            "Download Selected Audio",
-            "raw",
+    if entry.formats:
+        entry.selected_video_key = next(iter(entry.formats))
+    elif entry.audio_tracks or info.get("format_id"):
+        entry.formats["raw"] = "raw"
+        entry.selected_video_key = "raw"
+
+
+def _video_buttons(video_id: str, entry: VideoEntry) -> list[list[InlineKeyboardButton]]:
+    if not entry.formats:
+        return []
+
+    rows: list[list[InlineKeyboardButton]] = []
+    duration = _duration_seconds(entry.info)
+    audio_format = _audio_format_item(entry.info, _selected_audio(entry))
+
+    for key, format_id in entry.formats.items():
+        if format_id == "raw":
+            label = "Download Selected Audio" if entry.audio_tracks else "Download File"
+        else:
+            item = next(
+                (
+                    item
+                    for item in entry.info.get("formats", [])
+                    if isinstance(item, dict) and str(item.get("format_id")) == format_id
+                ),
+                None,
+            )
+            if item is None:
+                continue
+            height = item.get("height")
+            label = f"{height}p ({_download_size_label(item, audio_format, duration)})"
+
+        prefix = "[x] " if key == entry.selected_video_key else ""
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"{prefix}{label}",
+                    callback_data=f"{_DOWNLOAD_CALLBACK_PREFIX}_{video_id}_{key}",
+                )
+            ]
         )
-        return InlineKeyboardMarkup(buttons)
 
-    if not added_format:
+    return rows
+
+
+def _step_keyboard(video_id: str, entry: VideoEntry, step: str) -> Optional[InlineKeyboardMarkup]:
+    if step == "audio" and not _needs_audio_step(entry):
+        step = "subtitle"
+
+    if step == "audio":
+        rows = _audio_buttons(video_id, entry)
+        rows.extend(_navigation_button(video_id, "subtitle", "Next: Subtitles"))
+        return InlineKeyboardMarkup(rows)
+
+    if step == "subtitle":
+        rows = _subtitle_buttons(video_id, entry)
+        if not rows:
+            rows = [
+                [
+                    InlineKeyboardButton(
+                        "[x] No subtitles",
+                        callback_data=f"{_SUBTITLE_CALLBACK_PREFIX}_{video_id}_none",
+                    )
+                ]
+            ]
+        if _needs_audio_step(entry):
+            rows.extend(_navigation_button(video_id, "audio", "Back: Audio"))
+        rows.extend(_navigation_button(video_id, "video", "Next: Video Quality"))
+        return InlineKeyboardMarkup(rows)
+
+    rows = _video_buttons(video_id, entry)
+    if not rows:
         return None
+    back_step = "subtitle" if len(entry.subtitles) > 1 else "audio"
+    if back_step == "audio" and not _needs_audio_step(entry):
+        back_step = ""
+    if back_step:
+        rows.extend(
+            _navigation_button(
+                video_id,
+                back_step,
+                "Back: Subtitles" if back_step == "subtitle" else "Back: Audio",
+            )
+        )
+    return InlineKeyboardMarkup(rows)
 
-    return InlineKeyboardMarkup(buttons)
+
+def _screen_for_step(entry: VideoEntry, step: str) -> str:
+    if step == "audio" and not _needs_audio_step(entry):
+        step = "subtitle"
+    if step == "video":
+        return "video"
+    if step == "subtitle" and len(entry.subtitles) <= 1:
+        return "video"
+    return step
 
 
 def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> None:
@@ -818,19 +992,15 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
             entry = VideoEntry(info=info, url=url)
             _store_subtitle_choices(entry, info)
             _store_audio_tracks(entry, info)
+            _store_video_choices(entry, info)
             cache.set(video_id, entry)
-            keyboard = _build_format_keyboard(info, video_id, entry)
-            title = _title(info)
-            duration = info.get("duration")
-            duration_text = (
-                f"\nDuration: `{duration // 60}:{duration % 60:02d}`"
-                if duration
-                else ""
-            )
+            step = _screen_for_step(entry, "audio")
+            entry.current_step = step
+            keyboard = _step_keyboard(video_id, entry, step)
 
             if keyboard is None:
                 await status_message.edit(
-                    f"**Title:** `{title}`{duration_text}\n"
+                    f"**Title:** `{_title(info)}`{_format_duration_text(info)}\n"
                     "No downloadable video formats were found. On YouTube this "
                     "usually means the VPS still needs yt-dlp challenge support "
                     "and a JavaScript runtime."
@@ -838,10 +1008,7 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
                 return
 
             await status_message.edit(
-                f"**Title:** `{title}`{duration_text}\n"
-                f"Audio: `{_audio_status(entry)}`\n"
-                f"Soft subtitles: `{_subtitle_status(entry)}`\n"
-                "Select audio/subtitles, then format:",
+                _screen_text(entry, step),
                 reply_markup=keyboard,
             )
         except Exception as exc:
@@ -874,21 +1041,8 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
             return
 
         entry.selected_subtitle_key = subtitle_key
-        title = _title(entry.info)
-        duration = entry.info.get("duration")
-        duration_text = (
-            f"\nDuration: `{duration // 60}:{duration % 60:02d}`"
-            if duration
-            else ""
-        )
-        keyboard = _build_format_keyboard(entry.info, video_id, entry)
-        await callback_query.message.edit(
-            f"**Title:** `{title}`{duration_text}\n"
-            f"Audio: `{_audio_status(entry)}`\n"
-            f"Soft subtitles: `{_subtitle_status(entry)}`\n"
-            "Select audio/subtitles, then format:",
-            reply_markup=keyboard,
-        )
+        step = _screen_for_step(entry, "video")
+        await _edit_step_message(callback_query, video_id, entry, step)
         await callback_query.answer(f"Subtitles: {_subtitle_status(entry)}")
 
     @app.on_callback_query(filters.regex(r"^aud_"))
@@ -928,22 +1082,36 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
                 _audio_label(selected_audio),
             )
 
-        title = _title(entry.info)
-        duration = entry.info.get("duration")
-        duration_text = (
-            f"\nDuration: `{duration // 60}:{duration % 60:02d}`"
-            if duration
-            else ""
-        )
-        keyboard = _build_format_keyboard(entry.info, video_id, entry)
-        await callback_query.message.edit(
-            f"**Title:** `{title}`{duration_text}\n"
-            f"Audio: `{_audio_status(entry)}`\n"
-            f"Soft subtitles: `{_subtitle_status(entry)}`\n"
-            "Select audio/subtitles, then format:",
-            reply_markup=keyboard,
-        )
+        step = _screen_for_step(entry, "subtitle")
+        await _edit_step_message(callback_query, video_id, entry, step)
         await callback_query.answer(f"Audio: {_audio_status(entry)}")
+
+    @app.on_callback_query(filters.regex(r"^nav_"))
+    async def handle_step_navigation(client: Client, callback_query: CallbackQuery) -> None:
+        if await reject_callback_if_unauthorized(callback_query, settings):
+            return
+
+        try:
+            _, video_id, step = callback_query.data.split("_", 2)
+        except (AttributeError, ValueError):
+            await callback_query.answer("Navigation error.", show_alert=True)
+            return
+
+        entry = cache.get(video_id)
+        if not entry:
+            await callback_query.answer(
+                "Session expired. Please send the link again.",
+                show_alert=True,
+            )
+            return
+
+        if step not in {"audio", "subtitle", "video"}:
+            await callback_query.answer("Navigation expired.", show_alert=True)
+            return
+
+        step = _screen_for_step(entry, step)
+        await _edit_step_message(callback_query, video_id, entry, step)
+        await callback_query.answer()
 
     @app.on_callback_query(filters.regex(r"^dl_"))
     async def handle_download(client: Client, callback_query: CallbackQuery) -> None:
@@ -972,6 +1140,7 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
             )
             return
 
+        entry.selected_video_key = format_key
         subtitle_language = _selected_subtitle(entry).language
         selected_audio = _selected_audio(entry)
         audio_format_id = selected_audio.format_id if selected_audio else None
