@@ -253,14 +253,45 @@ def _title(info: Dict[str, Any]) -> str:
     return str(info.get("title") or "Untitled")[:60]
 
 
-def _download_progress_hook(reporter: ProgressReporter):
+def _download_status_label(
+    data: Dict[str, Any],
+    video_format_id: Optional[str],
+    audio_format_id: Optional[str],
+) -> str:
+    info = data.get("info_dict")
+    if not isinstance(info, dict):
+        return "Downloading..."
+
+    current_format_id = info.get("format_id")
+    if current_format_id is not None:
+        current_format_id = str(current_format_id)
+    if audio_format_id and current_format_id == audio_format_id:
+        return "Downloading audio..."
+    if video_format_id and current_format_id == video_format_id:
+        return "Downloading video..."
+
+    acodec = info.get("acodec")
+    vcodec = info.get("vcodec")
+    if acodec not in {None, "none"} and vcodec in {None, "none"}:
+        return "Downloading audio..."
+    if vcodec not in {None, "none"}:
+        return "Downloading video..."
+
+    return "Downloading..."
+
+
+def _download_progress_hook(
+    reporter: ProgressReporter,
+    video_format_id: Optional[str],
+    audio_format_id: Optional[str],
+):
     def hook(data: Dict[str, Any]) -> None:
         status = data.get("status")
         if status == "downloading":
             current = data.get("downloaded_bytes") or 0
             total = data.get("total_bytes") or data.get("total_bytes_estimate")
             reporter.sync_update(
-                "Downloading...",
+                _download_status_label(data, video_format_id, audio_format_id),
                 current,
                 total,
                 speed=data.get("speed"),
@@ -1164,7 +1195,11 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
                 settings.download_dir,
                 entry.info,
                 audio_format_id=audio_format_id,
-                progress_hook=_download_progress_hook(reporter),
+                progress_hook=_download_progress_hook(
+                    reporter,
+                    format_id,
+                    audio_format_id,
+                ),
                 cookies_file=settings.cookies_file,
                 subtitle_language=subtitle_language,
             )
