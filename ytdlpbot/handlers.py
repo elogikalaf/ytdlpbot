@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -12,7 +13,7 @@ from ytdlpbot.auth import (
     reject_callback_if_unauthorized,
     reject_message_if_unauthorized,
 )
-from ytdlpbot.cache import SubtitleChoice, VideoCache, VideoEntry
+from ytdlpbot.cache import AudioTrack, SubtitleChoice, VideoCache, VideoEntry
 from ytdlpbot.config import Settings
 from ytdlpbot.media import VIDEO_EXTENSIONS, download_media, extract_info, make_video_id
 from ytdlpbot.progress import ProgressReporter, format_bytes
@@ -20,6 +21,7 @@ from ytdlpbot.progress import ProgressReporter, format_bytes
 
 _VIDEO_HEIGHTS = {144, 240, 360, 480, 720, 1080, 1440, 2160}
 _SUBTITLE_CALLBACK_PREFIX = "sub"
+_AUDIO_CALLBACK_PREFIX = "aud"
 _DOWNLOAD_CALLBACK_PREFIX = "dl"
 _MAX_SUBTITLE_BUTTONS = 8
 _PREFERRED_SUBTITLE_LANGUAGES = (
@@ -226,6 +228,8 @@ _LANGUAGE_NAMES = {
     "zu": "Zulu",
 }
 
+logger = logging.getLogger(__name__)
+
 
 def _positive_float(value: Any) -> Optional[float]:
     try:
@@ -299,6 +303,13 @@ def _add_format(
     )
 
 
+def _optional_int(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _track_name(tracks: Any) -> Optional[str]:
     if not isinstance(tracks, list):
         return None
@@ -331,6 +342,205 @@ def _language_name(language: str, tracks: Any = None) -> str:
         return _LANGUAGE_NAMES[base_language]
 
     return f"Language: {language}"
+
+
+def _is_audio_capable_format(item: Dict[str, Any]) -> bool:
+    return item.get("acodec") not in {None, "none"}
+
+
+def _audio_language_display(language: Optional[str]) -> str:
+    if not language:
+        return "Unknown audio"
+    return _language_name(language)
+
+
+def _is_original_audio(item: Dict[str, Any]) -> bool:
+    note = str(item.get("format_note") or "").lower()
+    format_id = str(item.get("format_id") or "")
+    return "original" in note or format_id.endswith("-0")
+
+
+def _is_default_audio(item: Dict[str, Any]) -> bool:
+    note = str(item.get("format_note") or "").lower()
+    language_preference = _optional_int(item.get("language_preference"))
+    return bool(language_preference and language_preference > 0) or "default" in note
+
+
+def _audio_track_from_format(item: Dict[str, Any]) -> Optional[AudioTrack]:
+    format_id = item.get("format_id")
+    if not format_id:
+        return None
+
+    language = item.get("language")
+    if language is not None:
+        language = str(language)
+
+    return AudioTrack(
+        format_id=str(format_id),
+        language=language,
+        language_display=_audio_language_display(language),
+        is_default=_is_default_audio(item),
+        is_original=_is_original_audio(item),
+        is_audio_only=_is_audio_format(item),
+        abr=_positive_float(item.get("abr")),
+        source_preference=_optional_int(item.get("source_preference")),
+        language_preference=_optional_int(item.get("language_preference")),
+        format_note=str(item.get("format_note")) if item.get("format_note") else None,
+    )
+
+
+def _audio_default_score(track: AudioTrack, index: int) -> tuple[int, int, int]:
+    # YouTube now exposes original, dubbed, and sometimes generated audio as
+    # separate streams. The old code kept only the chosen video id and let
+    # yt-dlp auto-pick audio later, so a Spanish dub could replace English.
+    # Keep this ranking deterministic and use the winning exact format id.
+    if track.language_preference is not None and track.language_preference > 0:
+        return 5, track.language_preference, -index
+    if track.is_original:
+        return 4, 0, -index
+    if track.is_default:
+        return 3, 0, -index
+    if track.format_id.endswith("-0"):
+        return 2, 0, -index
+    if track.source_preference is not None:
+        return 1, track.source_preference, -index
+    return 0, 0, -index
+
+
+def _select_default_audio_key(entry: VideoEntry) -> Optional[str]:
+    if not entry.audio_tracks:
+        return None
+    audio_only_keys = [
+        key for key, track in entry.audio_tracks.items() if track.is_audio_only
+    ]
+    candidate_keys = audio_only_keys or list(entry.audio_tracks)
+    return max(
+        candidate_keys,
+        key=lambda key: _audio_default_score(
+            entry.audio_tracks[key],
+            candidate_keys.index(key),
+        ),
+    )
+
+
+def _store_audio_tracks(entry: VideoEntry, info: Dict[str, Any]) -> None:
+    entry.audio_tracks.clear()
+    entry.selected_audio_key = None
+
+    # Preserve every audio-capable yt-dlp format. Multilingual YouTube videos
+    # often provide one audio-only stream per language/dub, and automatic
+    # "best audio" selection is not language-safe across extractor changes.
+    audio_formats = [
+        item
+        for item in info.get("formats", [])
+        if isinstance(item, dict) and _is_audio_capable_format(item)
+    ]
+
+    for index, item in enumerate(audio_formats):
+        track = _audio_track_from_format(item)
+        if track is None:
+            continue
+
+        key = f"a{index}"
+        entry.audio_tracks[key] = track
+        logger.debug(
+            "Detected audio track: key=%s format_id=%s language=%s display=%s "
+            "default=%s original=%s audio_only=%s abr=%s source_preference=%s "
+            "language_preference=%s format_note=%s",
+            key,
+            track.format_id,
+            track.language,
+            track.language_display,
+            track.is_default,
+            track.is_original,
+            track.is_audio_only,
+            track.abr,
+            track.source_preference,
+            track.language_preference,
+            track.format_note,
+        )
+
+    entry.selected_audio_key = _select_default_audio_key(entry)
+    selected = _selected_audio(entry)
+    if selected:
+        logger.debug(
+            "Selected default audio track: key=%s format_id=%s language=%s label=%s",
+            entry.selected_audio_key,
+            selected.format_id,
+            selected.language,
+            _audio_label(selected),
+        )
+
+
+def _selected_audio(entry: VideoEntry) -> Optional[AudioTrack]:
+    if entry.selected_audio_key is None:
+        return None
+    return entry.audio_tracks.get(entry.selected_audio_key)
+
+
+def _audio_label(track: AudioTrack) -> str:
+    details: list[str] = []
+    note = (track.format_note or "").lower()
+    if track.is_original:
+        details.append("Original")
+    elif track.is_default:
+        details.append("Default")
+    if not track.is_audio_only:
+        details.append("Muxed")
+    if "dub" in note:
+        details.append("Dubbed")
+    if "generated" in note or "auto" in note:
+        details.append("Generated")
+    if track.abr:
+        details.append(f"{track.abr:g}k")
+
+    suffix = f" ({', '.join(dict.fromkeys(details))})" if details else ""
+    return f"{track.language_display}{suffix}"[:48]
+
+
+def _audio_status(entry: VideoEntry) -> str:
+    selected = _selected_audio(entry)
+    return _audio_label(selected) if selected else "None"
+
+
+def _audio_format_item(info: Dict[str, Any], track: Optional[AudioTrack]) -> Optional[Dict[str, Any]]:
+    if not track:
+        return None
+    for item in info.get("formats", []):
+        if isinstance(item, dict) and str(item.get("format_id")) == track.format_id:
+            return item
+    return None
+
+
+def _audio_buttons(video_id: str, entry: VideoEntry) -> list[list[InlineKeyboardButton]]:
+    if not entry.audio_tracks:
+        return []
+
+    rows: list[list[InlineKeyboardButton]] = []
+    current_row: list[InlineKeyboardButton] = []
+    audio_only_items = [
+        (key, track) for key, track in entry.audio_tracks.items() if track.is_audio_only
+    ]
+    # Exact video+audio merging requires an audio-only stream. Muxed formats are
+    # still logged and kept in state for odd extractors, but when YouTube gives
+    # separate language streams those are the only choices exposed here.
+    visible_tracks = audio_only_items or list(entry.audio_tracks.items())
+    for key, track in visible_tracks:
+        prefix = "[x] " if key == entry.selected_audio_key else ""
+        current_row.append(
+            InlineKeyboardButton(
+                f"{prefix}{_audio_label(track)}",
+                callback_data=f"{_AUDIO_CALLBACK_PREFIX}_{video_id}_{key}",
+            )
+        )
+        if len(current_row) == 2:
+            rows.append(current_row)
+            current_row = []
+
+    if current_row:
+        rows.append(current_row)
+
+    return rows
 
 
 def _subtitle_label(language: str, source: str, tracks: Any) -> str:
@@ -506,22 +716,6 @@ def _item_size(item: Dict[str, Any], duration: Optional[float]) -> tuple[Optiona
     return None, False
 
 
-def _best_audio_format(
-    formats: List[Dict[str, Any]],
-    duration: Optional[float],
-) -> Optional[Dict[str, Any]]:
-    audio_formats = [item for item in formats if _is_audio_format(item)]
-    if not audio_formats:
-        return None
-
-    def quality_key(item: Dict[str, Any]) -> tuple[float, float]:
-        size, _ = _item_size(item, duration)
-        bitrate = _positive_float(item.get("abr")) or _positive_float(item.get("tbr")) or 0
-        return bitrate, size or 0
-
-    return max(audio_formats, key=quality_key)
-
-
 def _download_size_label(
     item: Dict[str, Any],
     audio_format: Optional[Dict[str, Any]],
@@ -546,10 +740,15 @@ def _build_format_keyboard(
     entry: VideoEntry,
 ) -> Optional[InlineKeyboardMarkup]:
     buttons: List[List[InlineKeyboardButton]] = []
+    entry.formats.clear()
     formats = info.get("formats", [])
     duration = _duration_seconds(info)
-    audio_format = _best_audio_format(formats, duration)
+    audio_format = _audio_format_item(info, _selected_audio(entry))
+    has_audio_only_stream = any(
+        isinstance(item, dict) and _is_audio_format(item) for item in formats
+    )
     buttons.extend(_subtitle_buttons(video_id, entry))
+    buttons.extend(_audio_buttons(video_id, entry))
 
     if not formats or (len(formats) == 1 and not formats[0].get("height")):
         _add_format(buttons, entry, video_id, "raw", "Download File/Subtitle", "raw")
@@ -557,8 +756,11 @@ def _build_format_keyboard(
 
     seen_heights = set()
     index = 0
+    added_format = False
     for item in formats:
         if not _is_downloadable_video_format(item):
+            continue
+        if has_audio_only_stream and item.get("acodec") not in {None, "none"}:
             continue
 
         height = item.get("height")
@@ -570,8 +772,20 @@ def _build_format_keyboard(
         _add_format(buttons, entry, video_id, key, label, item["format_id"])
         seen_heights.add(height)
         index += 1
+        added_format = True
 
-    if not buttons:
+    if not added_format and entry.audio_tracks:
+        _add_format(
+            buttons,
+            entry,
+            video_id,
+            "raw",
+            "Download Selected Audio",
+            "raw",
+        )
+        return InlineKeyboardMarkup(buttons)
+
+    if not added_format:
         return None
 
     return InlineKeyboardMarkup(buttons)
@@ -603,6 +817,7 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
             info = await extract_info(url, cookies_file=settings.cookies_file)
             entry = VideoEntry(info=info, url=url)
             _store_subtitle_choices(entry, info)
+            _store_audio_tracks(entry, info)
             cache.set(video_id, entry)
             keyboard = _build_format_keyboard(info, video_id, entry)
             title = _title(info)
@@ -624,8 +839,9 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
 
             await status_message.edit(
                 f"**Title:** `{title}`{duration_text}\n"
+                f"Audio: `{_audio_status(entry)}`\n"
                 f"Soft subtitles: `{_subtitle_status(entry)}`\n"
-                "Select subtitles, then format:",
+                "Select audio/subtitles, then format:",
                 reply_markup=keyboard,
             )
         except Exception as exc:
@@ -668,11 +884,66 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
         keyboard = _build_format_keyboard(entry.info, video_id, entry)
         await callback_query.message.edit(
             f"**Title:** `{title}`{duration_text}\n"
+            f"Audio: `{_audio_status(entry)}`\n"
             f"Soft subtitles: `{_subtitle_status(entry)}`\n"
-            "Select subtitles, then format:",
+            "Select audio/subtitles, then format:",
             reply_markup=keyboard,
         )
         await callback_query.answer(f"Subtitles: {_subtitle_status(entry)}")
+
+    @app.on_callback_query(filters.regex(r"^aud_"))
+    async def handle_audio_selection(client: Client, callback_query: CallbackQuery) -> None:
+        if await reject_callback_if_unauthorized(callback_query, settings):
+            return
+
+        try:
+            _, video_id, audio_key = callback_query.data.split("_", 2)
+        except (AttributeError, ValueError):
+            await callback_query.answer("Audio error.", show_alert=True)
+            return
+
+        entry = cache.get(video_id)
+        if not entry:
+            await callback_query.answer(
+                "Session expired. Please send the link again.",
+                show_alert=True,
+            )
+            return
+
+        if audio_key not in entry.audio_tracks:
+            await callback_query.answer(
+                "Audio track expired. Please send the link again.",
+                show_alert=True,
+            )
+            return
+
+        entry.selected_audio_key = audio_key
+        selected_audio = _selected_audio(entry)
+        if selected_audio:
+            logger.debug(
+                "User selected audio track: key=%s format_id=%s language=%s label=%s",
+                audio_key,
+                selected_audio.format_id,
+                selected_audio.language,
+                _audio_label(selected_audio),
+            )
+
+        title = _title(entry.info)
+        duration = entry.info.get("duration")
+        duration_text = (
+            f"\nDuration: `{duration // 60}:{duration % 60:02d}`"
+            if duration
+            else ""
+        )
+        keyboard = _build_format_keyboard(entry.info, video_id, entry)
+        await callback_query.message.edit(
+            f"**Title:** `{title}`{duration_text}\n"
+            f"Audio: `{_audio_status(entry)}`\n"
+            f"Soft subtitles: `{_subtitle_status(entry)}`\n"
+            "Select audio/subtitles, then format:",
+            reply_markup=keyboard,
+        )
+        await callback_query.answer(f"Audio: {_audio_status(entry)}")
 
     @app.on_callback_query(filters.regex(r"^dl_"))
     async def handle_download(client: Client, callback_query: CallbackQuery) -> None:
@@ -702,6 +973,15 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
             return
 
         subtitle_language = _selected_subtitle(entry).language
+        selected_audio = _selected_audio(entry)
+        audio_format_id = selected_audio.format_id if selected_audio else None
+        if selected_audio:
+            logger.debug(
+                "Starting download with selected audio: format_id=%s language=%s label=%s",
+                audio_format_id,
+                selected_audio.language,
+                _audio_label(selected_audio),
+            )
         output_path: Path | None = None
         await callback_query.answer("Starting download...")
         reporter = ProgressReporter(callback_query.message, _title(entry.info))
@@ -714,6 +994,7 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
                 format_id,
                 settings.download_dir,
                 entry.info,
+                audio_format_id=audio_format_id,
                 progress_hook=_download_progress_hook(reporter),
                 cookies_file=settings.cookies_file,
                 subtitle_language=subtitle_language,

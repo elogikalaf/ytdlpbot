@@ -12,11 +12,27 @@ class SubtitleChoice:
 
 
 @dataclass
+class AudioTrack:
+    format_id: str
+    language: Optional[str]
+    language_display: str
+    is_default: bool
+    is_original: bool
+    is_audio_only: bool
+    abr: Optional[float]
+    source_preference: Optional[int]
+    language_preference: Optional[int]
+    format_note: Optional[str]
+
+
+@dataclass
 class VideoEntry:
     info: Dict[str, Any]
     url: str
     formats: Dict[str, str] = field(default_factory=dict)
+    audio_tracks: Dict[str, AudioTrack] = field(default_factory=dict)
     subtitles: Dict[str, SubtitleChoice] = field(default_factory=dict)
+    selected_audio_key: Optional[str] = None
     selected_subtitle_key: str = "none"
 
 

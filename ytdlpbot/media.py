@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from email.message import Message
 import hashlib
+import logging
 import mimetypes
 import urllib.parse
 from pathlib import Path
@@ -14,6 +15,7 @@ import yt_dlp
 
 VIDEO_EXTENSIONS = {"mp4", "mkv", "webm", "mov"}
 ProgressHook = Callable[[Dict[str, Any]], None]
+logger = logging.getLogger(__name__)
 
 _UNKNOWN_EXTENSIONS = {"", "part", "unknown", "unknown_video", "ytdl"}
 _UNHELPFUL_MIME_EXTENSIONS = {".bat", ".c", ".ksh"}
@@ -170,6 +172,7 @@ async def download_media(
     format_id: str,
     output_dir: str,
     info: Dict[str, Any],
+    audio_format_id: Optional[str] = None,
     progress_hook: Optional[ProgressHook] = None,
     cookies_file: Optional[str] = None,
     subtitle_language: Optional[str] = None,
@@ -177,28 +180,51 @@ async def download_media(
     download_dir = Path(output_dir) / download_id
     download_dir.mkdir(parents=True, exist_ok=True)
 
-    def _format_candidates() -> list[str]:
-        if format_id in {"raw", "best"}:
-            return [
-                "bestvideo+bestaudio/best",
-                "bv*+ba/b",
-                "best",
-            ]
+    def _format_item(target_format_id: str) -> Optional[Dict[str, Any]]:
+        for item in info.get("formats", []):
+            if isinstance(item, dict) and str(item.get("format_id")) == target_format_id:
+                return item
+        return None
 
-        return [
-            f"{format_id}+bestaudio/best",
-            format_id,
-            "bestvideo+bestaudio/best",
-            "bv*+ba/b",
-            "best",
-        ]
+    def _exact_format_selector() -> Optional[str]:
+        if format_id == "raw":
+            if audio_format_id:
+                return audio_format_id
+            raw_format_id = info.get("format_id")
+            return str(raw_format_id) if raw_format_id else None
+
+        video_item = _format_item(format_id)
+        selected_audio_item = _format_item(audio_format_id) if audio_format_id else None
+        selected_audio_is_audio_only = bool(
+            selected_audio_item
+            and selected_audio_item.get("acodec") not in {None, "none"}
+            and selected_audio_item.get("vcodec") in {None, "none"}
+        )
+
+        # The previous implementation built selectors such as
+        # "<video>+best audio" and then retried broader automatic selectors.
+        # That loses the user's language choice on multilingual YouTube videos,
+        # where original, dubbed, and generated audio are separate streams.
+        if audio_format_id and audio_format_id != format_id and selected_audio_is_audio_only:
+            return f"{format_id}+{audio_format_id}"
+        if audio_format_id:
+            logger.warning(
+                "Selected audio format %s is muxed or otherwise unsuitable for "
+                "separate merging; falling back to the exact video format %s.",
+                audio_format_id,
+                format_id,
+            )
+            return format_id
+        if selected_video_has_audio:
+            return format_id
+        return format_id
 
     def _clear_download_dir() -> None:
         for candidate in download_dir.iterdir():
             if candidate.is_file():
                 candidate.unlink()
 
-    def _download_once(target_format: str) -> Optional[Path]:
+    def _download_once(target_format: Optional[str]) -> Optional[Path]:
         downloaded_path: Optional[Path] = None
 
         def track_progress(data: Dict[str, Any]) -> None:
@@ -212,11 +238,12 @@ async def download_media(
         ydl_opts = _yt_dlp_options(cookies_file)
         ydl_opts.update(
             {
-                "format": target_format,
                 "outtmpl": str(download_dir / "%(title).200B [%(id)s].%(ext)s"),
                 "progress_hooks": [track_progress],
             }
         )
+        if target_format:
+            ydl_opts["format"] = target_format
         if subtitle_language:
             ydl_opts.update(
                 {
@@ -234,6 +261,13 @@ async def download_media(
                 }
             )
 
+        logger.debug(
+            "Final yt-dlp format string: %s "
+            "(video_format_id=%s audio_format_id=%s)",
+            target_format,
+            format_id,
+            audio_format_id,
+        )
         yt_dlp.YoutubeDL(ydl_opts).download([url])
 
         if downloaded_path and downloaded_path.exists():
@@ -246,21 +280,10 @@ async def download_media(
             return max(matches, key=lambda p: p.stat().st_mtime)
         return None
 
-    last_error: Exception | None = None
-    for target_format in _format_candidates():
-        _clear_download_dir()
-        try:
-            output_path = await asyncio.to_thread(_download_once, target_format)
-            if not output_path:
-                raise FileNotFoundError("Downloaded file could not be found")
-            return await _fix_extension_if_needed(output_path, url, info)
-        except Exception as exc:
-            last_error = exc
-            message = str(exc).lower()
-            if "requested format is not available" not in message and "only images are available for download" not in message:
-                raise
-
-    if last_error:
-        raise last_error
+    target_format = _exact_format_selector()
+    _clear_download_dir()
+    output_path = await asyncio.to_thread(_download_once, target_format)
+    if output_path:
+        return await _fix_extension_if_needed(output_path, url, info)
 
     raise FileNotFoundError("Downloaded file could not be found")

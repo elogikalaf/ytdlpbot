@@ -50,6 +50,11 @@ For YouTube downloads, the VPS must also have a JavaScript runtime available to
 yt-dlp. Without this, YouTube may return only storyboard/images and yt-dlp will
 print `n challenge solving failed`.
 
+The bot now selects audio tracks explicitly by yt-dlp `format_id`. This is
+needed for multilingual YouTube videos, where original, dubbed, and generated
+audio may all exist on the same video and `bestaudio` can pick the wrong
+language.
+
 Recommended VPS setup:
 
 ```sh
