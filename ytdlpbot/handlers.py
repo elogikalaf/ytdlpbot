@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -230,6 +231,7 @@ _LANGUAGE_NAMES = {
 }
 
 logger = logging.getLogger(__name__)
+_FILENAME_TOKEN_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def _positive_float(value: Any) -> Optional[float]:
@@ -251,6 +253,101 @@ def _format_size(size: Any, *, estimated: bool = False) -> str:
 
 def _title(info: Dict[str, Any]) -> str:
     return str(info.get("title") or "Untitled")[:60]
+
+
+def _filename_token(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    token = _FILENAME_TOKEN_RE.sub("-", str(value).strip().lower()).strip(".-_")
+    return token or None
+
+
+def _format_item_by_id(info: Dict[str, Any], format_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not format_id:
+        return None
+    for item in info.get("formats", []):
+        if isinstance(item, dict) and str(item.get("format_id")) == str(format_id):
+            return item
+    return None
+
+
+def _selected_height_label(info: Dict[str, Any], format_id: str) -> Optional[str]:
+    item = _format_item_by_id(info, format_id)
+    height = item.get("height") if item else None
+    return f"{height}p" if height else None
+
+
+def _settings_filename_suffix(
+    info: Dict[str, Any],
+    video_format_id: str,
+    audio: Optional[AudioTrack],
+    subtitle: SubtitleChoice,
+) -> str:
+    parts: list[str] = []
+    audio_language = _filename_token(audio.language if audio else None)
+    if audio_language:
+        parts.append(f"audio-{audio_language}")
+
+    if subtitle.language:
+        subtitle_language = _filename_token(subtitle.language)
+        parts.append(f"softsub-{subtitle_language}" if subtitle_language else "softsub")
+
+    height = _selected_height_label(info, video_format_id)
+    if height:
+        parts.append(height)
+
+    return ".".join(parts)
+
+
+def _path_with_suffix(path: Path, suffix: str) -> Path:
+    if not suffix:
+        return path
+    if path.stem.endswith(f".{suffix}"):
+        return path
+    return path.with_name(f"{path.stem}.{suffix}{path.suffix}")
+
+
+def _rename_path(path: Path, suffix: str) -> Path:
+    target = _path_with_suffix(path, suffix)
+    if target == path:
+        return path
+
+    counter = 2
+    while target.exists():
+        target = path.with_name(f"{path.stem}.{suffix}.{counter}{path.suffix}")
+        counter += 1
+
+    path.rename(target)
+    return target
+
+
+def _apply_settings_filename_suffix(
+    output_path: Path,
+    subtitle_path: Optional[Path],
+    suffix: str,
+) -> tuple[Path, Optional[Path]]:
+    output_path = _rename_path(output_path, suffix)
+    if subtitle_path and subtitle_path.exists():
+        subtitle_path = _rename_path(subtitle_path, suffix)
+    return output_path, subtitle_path
+
+
+def _ensure_source_id(path: Path, source_id: Optional[str]) -> Path:
+    if not source_id:
+        return path
+
+    token = f"[{source_id}]"
+    if token in path.stem:
+        return path
+
+    target = path.with_name(f"{path.stem} {token}{path.suffix}")
+    counter = 2
+    while target.exists():
+        target = path.with_name(f"{path.stem} {token}.{counter}{path.suffix}")
+        counter += 1
+
+    path.rename(target)
+    return target
 
 
 def _download_status_label(
@@ -1172,7 +1269,8 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
             return
 
         entry.selected_video_key = format_key
-        subtitle_language = _selected_subtitle(entry).language
+        selected_subtitle = _selected_subtitle(entry)
+        subtitle_language = selected_subtitle.language
         selected_audio = _selected_audio(entry)
         audio_format_id = selected_audio.format_id if selected_audio else None
         if selected_audio:
@@ -1203,6 +1301,24 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
                 ),
                 cookies_file=settings.cookies_file,
                 subtitle_language=subtitle_language,
+            )
+            source_id = entry.info.get("id")
+            output_path = _ensure_source_id(output_path, str(source_id) if source_id else None)
+            if subtitle_path:
+                subtitle_path = _ensure_source_id(
+                    subtitle_path,
+                    str(source_id) if source_id else None,
+                )
+            filename_suffix = _settings_filename_suffix(
+                entry.info,
+                format_id,
+                selected_audio,
+                selected_subtitle,
+            )
+            output_path, subtitle_path = _apply_settings_filename_suffix(
+                output_path,
+                subtitle_path,
+                filename_suffix,
             )
             await reporter.done(
                 f"Download complete. Uploading `{output_path.name}` "
