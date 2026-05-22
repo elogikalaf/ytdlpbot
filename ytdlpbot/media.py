@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 import yt_dlp
 
 VIDEO_EXTENSIONS = {"mp4", "mkv", "webm", "mov"}
+SUBTITLE_EXTENSIONS = {".vtt", ".srt", ".ass", ".ssa", ".ttml", ".dfxp", ".srv1", ".srv2", ".srv3"}
 ProgressHook = Callable[[Dict[str, Any]], None]
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,20 @@ async def _fix_extension_if_needed(path: Path, url: str, info: Dict[str, Any]) -
     return new_path
 
 
+def _subtitle_candidates(download_dir: Path, media_path: Path) -> list[Path]:
+    candidates: list[Path] = []
+    for candidate in download_dir.iterdir():
+        if not candidate.is_file() or candidate == media_path:
+            continue
+        suffix = candidate.suffix.lower()
+        if suffix not in SUBTITLE_EXTENSIONS:
+            continue
+        if not candidate.name.startswith(media_path.stem):
+            continue
+        candidates.append(candidate)
+    return sorted(candidates, key=lambda path: path.stat().st_mtime, reverse=True)
+
+
 async def download_media(
     url: str,
     download_id: str,
@@ -176,7 +191,7 @@ async def download_media(
     progress_hook: Optional[ProgressHook] = None,
     cookies_file: Optional[str] = None,
     subtitle_language: Optional[str] = None,
-) -> Path:
+) -> tuple[Path, Optional[Path]]:
     download_dir = Path(output_dir) / download_id
     download_dir.mkdir(parents=True, exist_ok=True)
 
@@ -258,10 +273,11 @@ async def download_media(
                     "subtitleslangs": [subtitle_language],
                     "subtitlesformat": "vtt/best",
                     "embedsubtitles": True,
+                    "keep_subs": True,
                     "postprocessors": [
                         {
                             "key": "FFmpegEmbedSubtitle",
-                            "already_have_subtitle": False,
+                            "already_have_subtitle": True,
                         }
                     ],
                 }
@@ -290,6 +306,11 @@ async def download_media(
     _clear_download_dir()
     output_path = await asyncio.to_thread(_download_once, target_format)
     if output_path:
-        return await _fix_extension_if_needed(output_path, url, info)
+        output_path = await _fix_extension_if_needed(output_path, url, info)
+        subtitle_path = None
+        if subtitle_language:
+            candidates = _subtitle_candidates(download_dir, output_path)
+            subtitle_path = candidates[0] if candidates else None
+        return output_path, subtitle_path
 
     raise FileNotFoundError("Downloaded file could not be found")

@@ -1183,12 +1183,13 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
                 _audio_label(selected_audio),
             )
         output_path: Path | None = None
+        subtitle_path: Path | None = None
         await callback_query.answer("Starting download...")
         reporter = ProgressReporter(callback_query.message, _title(entry.info))
         await reporter.start("Preparing download...")
 
         try:
-            output_path = await download_media(
+            output_path, subtitle_path = await download_media(
                 entry.url,
                 video_id,
                 format_id,
@@ -1222,6 +1223,18 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
                     chat_id=callback_query.message.chat.id,
                     document=str(output_path),
                     caption=f"**Subtitle/File:** `{entry.info.get('title')}`",
+                    progress=upload_progress,
+                )
+
+            if subtitle_path and subtitle_path.exists():
+                await reporter.done(
+                    f"Uploading subtitle `{subtitle_path.name}` "
+                    f"({format_bytes(subtitle_path.stat().st_size)})..."
+                )
+                await client.send_document(
+                    chat_id=callback_query.message.chat.id,
+                    document=str(subtitle_path),
+                    caption=f"**Subtitle:** `{entry.info.get('title')}`",
                     progress=upload_progress,
                 )
 
