@@ -21,6 +21,7 @@ from ytdlpbot.progress import ProgressReporter, format_bytes
 
 
 _VIDEO_HEIGHTS = {144, 240, 360, 480, 720, 1080, 1440, 2160}
+_VIDEO_HEIGHT_LABELS = tuple(sorted(_VIDEO_HEIGHTS))
 _SUBTITLE_CALLBACK_PREFIX = "sub"
 _AUDIO_CALLBACK_PREFIX = "aud"
 _DOWNLOAD_CALLBACK_PREFIX = "dl"
@@ -271,9 +272,29 @@ def _format_item_by_id(info: Dict[str, Any], format_id: Optional[str]) -> Option
     return None
 
 
+def _video_quality_height(item: Dict[str, Any]) -> Optional[int]:
+    dimensions = [
+        parsed
+        for parsed in (
+            _optional_int(item.get("height")),
+            _optional_int(item.get("width")),
+        )
+        if parsed is not None and parsed > 0
+    ]
+    if not dimensions:
+        return None
+
+    for parsed in dimensions:
+        if parsed in _VIDEO_HEIGHTS:
+            return parsed
+
+    visible_dimension = min(dimensions)
+    return min(_VIDEO_HEIGHT_LABELS, key=lambda allowed: abs(allowed - visible_dimension))
+
+
 def _selected_height_label(info: Dict[str, Any], format_id: str) -> Optional[str]:
     item = _format_item_by_id(info, format_id)
-    height = item.get("height") if item else None
+    height = _video_quality_height(item) if item else None
     return f"{height}p" if height else None
 
 
@@ -967,8 +988,8 @@ def _best_video_by_height(info: Dict[str, Any]) -> list[Dict[str, Any]]:
     for index, item in enumerate(formats):
         if not isinstance(item, dict) or not _is_downloadable_video_format(item):
             continue
-        height = item.get("height")
-        if height not in _VIDEO_HEIGHTS:
+        height = _video_quality_height(item)
+        if height is None:
             continue
         height_map.setdefault(height, []).append((index, item))
 
@@ -1025,7 +1046,7 @@ def _video_buttons(video_id: str, entry: VideoEntry) -> list[list[InlineKeyboard
             )
             if item is None:
                 continue
-            height = item.get("height")
+            height = _video_quality_height(item)
             label = f"{height}p ({_download_size_label(item, audio_format, duration)})"
 
         prefix = "[x] " if key == entry.selected_video_key else ""
