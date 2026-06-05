@@ -30,6 +30,7 @@ class VideoEntry:
     info: Dict[str, Any]
     url: str
     formats: Dict[str, str] = field(default_factory=dict)
+    audio_only_key: Optional[str] = None
     audio_tracks: Dict[str, AudioTrack] = field(default_factory=dict)
     subtitles: Dict[str, SubtitleChoice] = field(default_factory=dict)
     selected_video_key: Optional[str] = None

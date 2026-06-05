@@ -205,6 +205,7 @@ async def download_media(
     output_dir: str,
     info: Dict[str, Any],
     audio_format_id: Optional[str] = None,
+    audio_only: bool = False,
     progress_hook: Optional[ProgressHook] = None,
     cookies_file: Optional[str] = None,
     subtitle_language: Optional[str] = None,
@@ -219,6 +220,21 @@ async def download_media(
         return None
 
     def _exact_format_selector() -> Optional[str]:
+        if audio_only:
+            if audio_format_id:
+                return audio_format_id
+            audio_item = next(
+                (
+                    item
+                    for item in info.get("formats", [])
+                    if isinstance(item, dict)
+                    and item.get("acodec") not in {None, "none"}
+                    and item.get("vcodec") in {None, "none"}
+                ),
+                None,
+            )
+            return str(audio_item["format_id"]) if audio_item and audio_item.get("format_id") else "bestaudio/best"
+
         if format_id == "raw":
             if audio_format_id:
                 return audio_format_id
@@ -284,7 +300,20 @@ async def download_media(
         )
         if target_format:
             ydl_opts["format"] = target_format
-        if subtitle_language:
+        if audio_only:
+            ydl_opts.update(
+                {
+                    "postprocessors": [
+                        {
+                            "key": "FFmpegExtractAudio",
+                            "preferredcodec": "mp3",
+                            "preferredquality": "0",
+                        }
+                    ],
+                }
+            )
+        if subtitle_language and not audio_only:
+            postprocessors = ydl_opts.setdefault("postprocessors", [])
             ydl_opts.update(
                 {
                     "writesubtitles": True,
@@ -293,21 +322,22 @@ async def download_media(
                     "subtitlesformat": "vtt/best",
                     "embedsubtitles": True,
                     "keep_subs": True,
-                    "postprocessors": [
-                        {
-                            "key": "FFmpegEmbedSubtitle",
-                            "already_have_subtitle": True,
-                        }
-                    ],
+                }
+            )
+            postprocessors.append(
+                {
+                    "key": "FFmpegEmbedSubtitle",
+                    "already_have_subtitle": True,
                 }
             )
 
         logger.debug(
             "Final yt-dlp format string: %s "
-            "(video_format_id=%s audio_format_id=%s)",
+            "(video_format_id=%s audio_format_id=%s audio_only=%s)",
             target_format,
             format_id,
             audio_format_id,
+            audio_only,
         )
         yt_dlp.YoutubeDL(ydl_opts).download([url])
 

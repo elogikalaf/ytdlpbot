@@ -1,7 +1,7 @@
 # ytdlpbot
 
-A small private Telegram bot that downloads media through `yt-dlp` and uploads it
-back to allowed Telegram users.
+A small private Telegram bot that downloads video or MP3 audio through `yt-dlp`
+and uploads it back to allowed Telegram users.
 
 ## Configuration
 
@@ -68,6 +68,7 @@ python main.py
 ```
 
 The bot creates local download files temporarily under `downloads/` and removes
-them after upload.
+them after upload. The final quality screen includes an `Audio MP3` choice when
+yt-dlp reports audio streams for the link.
 
 Download and upload progress are shown in the Telegram status message.

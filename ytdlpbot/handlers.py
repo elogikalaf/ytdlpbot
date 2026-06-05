@@ -303,17 +303,22 @@ def _settings_filename_suffix(
     video_format_id: str,
     audio: Optional[AudioTrack],
     subtitle: SubtitleChoice,
+    *,
+    audio_only: bool = False,
 ) -> str:
     parts: list[str] = []
+    if audio_only:
+        parts.append("audio-mp3")
+
     audio_language = _filename_token(audio.language if audio else None)
     if audio_language:
         parts.append(f"audio-{audio_language}")
 
-    if subtitle.language:
+    if subtitle.language and not audio_only:
         subtitle_language = _filename_token(subtitle.language)
         parts.append(f"softsub-{subtitle_language}" if subtitle_language else "softsub")
 
-    height = _selected_height_label(info, video_format_id)
+    height = None if audio_only else _selected_height_label(info, video_format_id)
     if height:
         parts.append(height)
 
@@ -375,10 +380,15 @@ def _download_status_label(
     data: Dict[str, Any],
     video_format_id: Optional[str],
     audio_format_id: Optional[str],
+    *,
+    audio_only: bool = False,
 ) -> str:
     info = data.get("info_dict")
     if not isinstance(info, dict):
         return "Downloading..."
+
+    if audio_only:
+        return "Downloading audio..."
 
     current_format_id = info.get("format_id")
     if current_format_id is not None:
@@ -402,6 +412,8 @@ def _download_progress_hook(
     reporter: ProgressReporter,
     video_format_id: Optional[str],
     audio_format_id: Optional[str],
+    *,
+    audio_only: bool = False,
 ):
     def hook(data: Dict[str, Any]) -> None:
         status = data.get("status")
@@ -411,7 +423,12 @@ def _download_progress_hook(
             if total and current >= total:
                 return
             reporter.sync_update(
-                _download_status_label(data, video_format_id, audio_format_id),
+                _download_status_label(
+                    data,
+                    video_format_id,
+                    audio_format_id,
+                    audio_only=audio_only,
+                ),
                 current,
                 total,
                 speed=data.get("speed"),
@@ -1012,13 +1029,21 @@ def _best_video_by_height(info: Dict[str, Any]) -> list[Dict[str, Any]]:
 def _store_video_choices(entry: VideoEntry, info: Dict[str, Any]) -> None:
     entry.formats.clear()
     entry.selected_video_key = None
+    entry.audio_only_key = None
+
+    if entry.audio_tracks:
+        entry.audio_only_key = "audio"
+        entry.formats[entry.audio_only_key] = "audio"
 
     for index, item in enumerate(_best_video_by_height(info)):
         key = f"f{index}"
         entry.formats[key] = str(item["format_id"])
 
-    if entry.formats:
-        entry.selected_video_key = next(iter(entry.formats))
+    video_keys = [key for key in entry.formats if key != entry.audio_only_key]
+    if video_keys:
+        entry.selected_video_key = video_keys[0]
+    elif entry.audio_only_key:
+        entry.selected_video_key = entry.audio_only_key
     elif entry.audio_tracks or info.get("format_id"):
         entry.formats["raw"] = "raw"
         entry.selected_video_key = "raw"
@@ -1033,7 +1058,9 @@ def _video_buttons(video_id: str, entry: VideoEntry) -> list[list[InlineKeyboard
     audio_format = _audio_format_item(entry.info, _selected_audio(entry))
 
     for key, format_id in entry.formats.items():
-        if format_id == "raw":
+        if key == entry.audio_only_key:
+            label = f"Audio MP3 ({_download_size_label(audio_format or {}, None, duration)})"
+        elif format_id == "raw":
             label = "Download Selected Audio" if entry.audio_tracks else "Download File"
         else:
             item = next(
@@ -1290,20 +1317,24 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
             return
 
         entry.selected_video_key = format_key
+        audio_only = format_key == entry.audio_only_key
         selected_subtitle = _selected_subtitle(entry)
-        subtitle_language = selected_subtitle.language
+        subtitle_language = None if audio_only else selected_subtitle.language
         selected_audio = _selected_audio(entry)
         audio_format_id = selected_audio.format_id if selected_audio else None
         if selected_audio:
             logger.debug(
-                "Starting download with selected audio: format_id=%s language=%s label=%s",
+                "Starting download with selected audio: format_id=%s language=%s label=%s audio_only=%s",
                 audio_format_id,
                 selected_audio.language,
                 _audio_label(selected_audio),
+                audio_only,
             )
         output_path: Path | None = None
         subtitle_path: Path | None = None
-        await callback_query.answer("Starting download...")
+        await callback_query.answer(
+            "Starting MP3 download..." if audio_only else "Starting download..."
+        )
         reporter = ProgressReporter(callback_query.message, _title(entry.info))
         await reporter.start("Preparing download...")
 
@@ -1315,10 +1346,12 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
                 settings.download_dir,
                 entry.info,
                 audio_format_id=audio_format_id,
+                audio_only=audio_only,
                 progress_hook=_download_progress_hook(
                     reporter,
                     format_id,
                     audio_format_id,
+                    audio_only=audio_only,
                 ),
                 cookies_file=settings.cookies_file,
                 subtitle_language=subtitle_language,
@@ -1335,6 +1368,7 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
                 format_id,
                 selected_audio,
                 selected_subtitle,
+                audio_only=audio_only,
             )
             output_path, subtitle_path = _apply_settings_filename_suffix(
                 output_path,
@@ -1347,7 +1381,20 @@ def register_handlers(app: Client, settings: Settings, cache: VideoCache) -> Non
             )
             upload_progress = _upload_progress_callback(reporter)
 
-            if output_path.suffix.lstrip(".").lower() in VIDEO_EXTENSIONS:
+            if audio_only and output_path.suffix.lower() == ".mp3":
+                await client.send_audio(
+                    chat_id=callback_query.message.chat.id,
+                    audio=str(output_path),
+                    caption=f"**{entry.info.get('title')}**",
+                    title=str(entry.info.get("title") or output_path.stem),
+                    performer=(
+                        str(entry.info.get("uploader"))
+                        if entry.info.get("uploader")
+                        else None
+                    ),
+                    progress=upload_progress,
+                )
+            elif output_path.suffix.lstrip(".").lower() in VIDEO_EXTENSIONS:
                 await client.send_video(
                     chat_id=callback_query.message.chat.id,
                     video=str(output_path),
