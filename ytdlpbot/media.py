@@ -310,6 +310,7 @@ async def download_media(
                             "preferredquality": "0",
                         }
                     ],
+                    "postprocessor_hooks": [track_progress],
                 }
             )
         if subtitle_language and not audio_only:

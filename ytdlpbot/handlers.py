@@ -417,6 +417,24 @@ def _download_progress_hook(
 ):
     def hook(data: Dict[str, Any]) -> None:
         status = data.get("status")
+        postprocessor = data.get("postprocessor")
+        if postprocessor:
+            if status == "started":
+                label = (
+                    "Converting audio to MP3..."
+                    if audio_only and postprocessor == "ExtractAudio"
+                    else "Post-processing downloaded media..."
+                )
+                reporter.sync_done(label)
+            elif status == "finished":
+                label = (
+                    "Finalizing MP3..."
+                    if audio_only and postprocessor == "ExtractAudio"
+                    else "Finalizing download..."
+                )
+                reporter.sync_done(label)
+            return
+
         if status == "downloading":
             current = data.get("downloaded_bytes") or 0
             total = data.get("total_bytes") or data.get("total_bytes_estimate")
