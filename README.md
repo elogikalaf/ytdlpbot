@@ -58,10 +58,14 @@ language.
 Recommended VPS setup:
 
 ```sh
-python -m pip install -U "yt-dlp[default]"
+python -m pip install -U "yt-dlp[default]>=2026.8.19"
 sudo apt-get update
 sudo apt-get install -y nodejs
 ```
+
+yt-dlp 2026.08.19 or newer is required for TikTok's current webpage format.
+After upgrading an existing installation, restart the bot process so it loads
+the new Python package.
 
 ```sh
 python main.py
